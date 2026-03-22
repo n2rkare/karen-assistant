@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 
 const VALID_TOKENS = {
-  "CLAY-IOK-2026": { name: "Clay Bruggeman" },
+  "CLAY-IOK-2026": { name: "Clay Bruggeman" },"JOSE-SEGURA-2026": { name: "Jose Segura" },
 };
 
 const ADMIN_PASSWORD = "UndtkR3247K?";
