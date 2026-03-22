@@ -399,21 +399,16 @@ function KarenMain({ token }) {
     try {
 const res = await fetch("/api/chat", {
         method: "POST",
-        headers: { 
-  "Content-Type": "application/json",
-};
-      const data = await res.json();
-      const raw = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
-      const updatedTasks = parseTasksFromResponse(raw);
-      if (updatedTasks) await saveTasks(updatedTasks);
-      setMessages(prev => [...prev, { role: "assistant", content: cleanText(raw) }]);
-    } catch {
-      setMessages(prev => [...prev, { role: "assistant", content: "Connection error. Try again." }]);
-    } finally {
-      setLoading(false);
-      inputRef.current?.focus();
-    }
-  }
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: SYSTEM_PROMPT + taskContext,
+          messages: newMessages.map(m => ({ role: m.role, content: m.content })),
+        }),
+      });
 
   async function toggleTask(id) {
     await saveTasks(tasks.map(t => t.id === id ? { ...t, status: t.status === "done" ? "pending" : "done" } : t));
