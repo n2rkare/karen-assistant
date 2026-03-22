@@ -402,15 +402,6 @@ const res = await fetch("/api/chat", {
         headers: { 
   "Content-Type": "application/json",
 },,
-```
-
-And change the URL on the line above it from:
-```
-"/api/chat"
-```
-to:
-```
-"/api/chat",,
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
