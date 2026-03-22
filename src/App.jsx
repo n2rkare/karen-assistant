@@ -401,12 +401,12 @@ const res = await fetch("/api/chat", {
         method: "POST",
         headers: { 
   "Content-Type": "application/json",
-},
+},,
 ```
 
 And change the URL on the line above it from:
 ```
-"https://api.anthropic.com/v1/messages"
+"/api/chat"
 ```
 to:
 ```
