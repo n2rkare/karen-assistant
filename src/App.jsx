@@ -397,7 +397,7 @@ function KarenMain({ token }) {
     setLoading(true);
     const taskContext = tasks.length > 0 ? `\n\nCurrent task list:\n${JSON.stringify(tasks, null, 2)}` : "\n\nNo tasks logged yet.";
     try {
-const res = await fetch("https://api.anthropic.com/v1/messages", {
+const res = await fetch("/api/chat", {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
