@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from "react";
 
 // ─── Token validation ───────────────────────────────────────────────────────
 const VALID_TOKENS_KEY = "karen-valid-tokens";
