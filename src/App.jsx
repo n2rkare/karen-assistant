@@ -401,14 +401,7 @@ const res = await fetch("/api/chat", {
         method: "POST",
         headers: { 
   "Content-Type": "application/json",
-},,
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system: SYSTEM_PROMPT + taskContext,
-          messages: newMessages.map(m => ({ role: m.role, content: m.content })),
-        }),
-      });
+};
       const data = await res.json();
       const raw = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
       const updatedTasks = parseTasksFromResponse(raw);
