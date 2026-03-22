@@ -5,11 +5,9 @@ const VALID_TOKENS_KEY = "karen-valid-tokens";
 const ADMIN_PASSWORD = "UndtkR3247K?";
 
 async function getValidTokens() {
-  try {
-    const r = await window.storage.get(VALID_TOKENS_KEY, true); // shared storage
-    if (r?.value) return JSON.parse(r.value);
-  } catch (_) {}
-  return {};
+  return {
+    "CLAY-IOK-2026": { name: "Clay Bruggeman", createdAt: new Date().toISOString(), active: true },
+  };
 }
 
 async function saveValidTokens(tokens) {
