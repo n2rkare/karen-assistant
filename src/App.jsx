@@ -355,7 +355,7 @@ function KarenMain({ token }) {
   }
 
   function parseTasksFromResponse(text) {
-    const match = text.match(/```tasks\s*([\s\S]*?)```/);
+    const match = text.match(/```tasks\s*([\s\S]*?)```/) || text.match(/```json\s*([\s\S]*?)```/);
     if (!match) return null;
     try {
       const p = JSON.parse(match[1].trim());
