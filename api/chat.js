@@ -10,9 +10,8 @@ export default async function handler(req, res) {
       const { token, tasks } = req.body;
       if (!token) return res.status(400).json({ error: 'Missing token' });
       const blob = await put(`tasks/${token}.json`, JSON.stringify(tasks), {
+        access: 'private',
         allowOverwrite: true,
-        access: 'public',
-        token: process.env.BLOB_READ_WRITE_TOKEN,
       });
       return res.status(200).json({ ok: true, url: blob.url });
     } catch (err) {
@@ -24,16 +23,14 @@ export default async function handler(req, res) {
     try {
       const { token } = req.query;
       if (!token) return res.status(400).json({ error: 'Missing token' });
-      const { blobs } = await list({
-        prefix: `tasks/${token}.json`,
-      });
+      const { blobs } = await list({ prefix: `tasks/${token}.json` });
       if (!blobs || blobs.length === 0) return res.status(200).json({ tasks: [] });
-      const response = await fetch(blobs[0].url);
+      const response = await fetch(blobs[0].downloadUrl);
       if (!response.ok) return res.status(200).json({ tasks: [] });
       const tasks = await response.json();
       return res.status(200).json({ tasks });
-    } catch {
-      return res.status(200).json({ tasks: [] });
+    } catch (err) {
+      return res.status(200).json({ tasks: [], error: err.message });
     }
   }
 
