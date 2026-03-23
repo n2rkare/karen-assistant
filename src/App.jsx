@@ -473,7 +473,6 @@ function KarenMain({ token }) {
     setTasksState(withDefaults);
     saveTasks(token, withDefaults);
   }
-
   function parseTasksFromResponse(text) {
     const match = text.match(/```tasks\s*([\s\S]*?)```/);
     if (!match) return null;
