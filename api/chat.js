@@ -12,7 +12,6 @@ export default async function handler(req, res) {
       const blob = await put(`tasks/${token}.json`, JSON.stringify(tasks), {
         access: 'public',
         allowOverwrite: true,
-        token: process.env.BLOB_READ_WRITE_TOKEN,
       });
       return res.status(200).json({ ok: true, url: blob.url });
     } catch (err) {
@@ -26,7 +25,6 @@ export default async function handler(req, res) {
       if (!token) return res.status(400).json({ error: 'Missing token' });
       const { blobs } = await list({
         prefix: `tasks/${token}.json`,
-        token: process.env.BLOB_READ_WRITE_TOKEN,
       });
       if (!blobs || blobs.length === 0) return res.status(200).json({ tasks: [] });
       const response = await fetch(blobs[0].url);
