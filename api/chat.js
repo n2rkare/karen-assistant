@@ -12,6 +12,7 @@ export default async function handler(req, res) {
       const blob = await put(`tasks-${token}.json`, JSON.stringify(tasks), {
         access: 'public',
         allowOverwrite: true,
+        addRandomSuffix: false,
       });
       return res.status(200).json({ ok: true, url: blob.url });
     } catch (err) {
