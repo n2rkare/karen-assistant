@@ -18,13 +18,18 @@ function generateToken() {
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
 async function saveTasks(token, tasks) {
+  console.log("SAVING TASKS TO BLOB", token, tasks.length);
   try {
-    await fetch("/api/chat", {
+    const res = await fetch("/api/chat", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token, tasks }),
     });
-  } catch (_) {}
+    const data = await res.json();
+    console.log("BLOB SAVE RESULT", data);
+  } catch (err) {
+    console.log("BLOB SAVE ERROR", err);
+  }
   try { localStorage.setItem(`karen-tasks-${token}`, JSON.stringify(tasks)); } catch (_) {}
 }
 async function loadTasks(token) {
