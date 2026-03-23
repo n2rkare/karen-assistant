@@ -16,7 +16,7 @@ function generateToken() {
   return Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 }
 
-// ── API helpers ───────────────────────────────────────────────────────────────
+// ── Storage helpers ───────────────────────────────────────────────────────────
 async function saveTasks(token, tasks) {
   try {
     await fetch("/api/chat", {
@@ -25,17 +25,17 @@ async function saveTasks(token, tasks) {
       body: JSON.stringify({ token, tasks }),
     });
   } catch (_) {}
-  // Always save locally as fallback
   try { localStorage.setItem(`karen-tasks-${token}`, JSON.stringify(tasks)); } catch (_) {}
 }
 
 async function loadTasks(token) {
   try {
-    const res = await fetch(`/api/chat?token=${token}`);
-    const data = await res.json();
-    if (data.tasks && data.tasks.length > 0) return data.tasks;
+    const res = await fetch(`/api/chat?token=${encodeURIComponent(token)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.tasks && data.tasks.length > 0) return data.tasks;
+    }
   } catch (_) {}
-  // Fallback to localStorage
   try {
     const local = localStorage.getItem(`karen-tasks-${token}`);
     if (local) return JSON.parse(local);
@@ -43,42 +43,115 @@ async function loadTasks(token) {
   return [];
 }
 
+function saveSettings(token, settings) {
+  try { localStorage.setItem(`karen-settings-${token}`, JSON.stringify(settings)); } catch (_) {}
+}
+function loadSettings(token) {
+  try {
+    const s = localStorage.getItem(`karen-settings-${token}`);
+    if (s) return JSON.parse(s);
+  } catch (_) {}
+  return { darkMode: true, defaultDueTime: "10:00", defaultCategory: "Operations" };
+}
+
+// ── Time helpers ──────────────────────────────────────────────────────────────
+function getTimeRemaining(dueDate) {
+  if (!dueDate) return null;
+  return new Date(dueDate) - new Date();
+}
+
+function getUrgencyColor(task) {
+  if (task.status === "done") return "#1e293b";
+  const ms = getTimeRemaining(task.dueDate);
+  if (ms === null) return "#6366f1"; // no due date — indigo
+  if (ms < 0) return "#ef4444"; // overdue — red
+  if (ms < 24 * 60 * 60 * 1000) return "#ff006e"; // under 24hr — neon pink
+  if (ms < 48 * 60 * 60 * 1000) return "#ffbe0b"; // 24-48hr — yellow
+  return "#00b4d8"; // over 48hr — neon blue
+}
+
+function formatDueTime(dueDate) {
+  if (!dueDate) return null;
+  const d = new Date(dueDate);
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
+function formatDueDate(dueDate) {
+  if (!dueDate) return null;
+  const d = new Date(dueDate);
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === tomorrow.toDateString()) return "Tomorrow";
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function snoozeDate(hours) {
+  const d = new Date();
+  d.setHours(d.getHours() + hours);
+  d.setMinutes(0, 0, 0);
+  return d.toISOString();
+}
+
+function applyDefaultTime(isoDate, defaultTime) {
+  if (!isoDate) return null;
+  const d = new Date(isoDate);
+  if (d.getHours() === 0 && d.getMinutes() === 0) {
+    const [h, m] = defaultTime.split(":").map(Number);
+    d.setHours(h, m, 0, 0);
+  }
+  return d.toISOString();
+}
+
+function isOverdue(task) {
+  if (!task.dueDate || task.status === "done") return false;
+  return new Date(task.dueDate) < new Date();
+}
+
+// ── Family name detection ─────────────────────────────────────────────────────
+function detectFamilyName(title) {
+  const patterns = [
+    /(?:family|the)\s+([A-Z][a-z]+)\s+(?:family)?/i,
+    /([A-Z][a-z]+)\s+(?:family|case|arrangement|service|funeral)/i,
+    /(?:Mr|Mrs|Ms|Dr)\.?\s+([A-Z][a-z]+)/i,
+    /(?:for|re:?)\s+([A-Z][a-z]+)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = title.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+}
+
 // ── System prompt ─────────────────────────────────────────────────────────────
-function buildSystemPrompt(taskContext) {
+function buildSystemPrompt(taskContext, defaultTime) {
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
   const time = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-  return `You are Kare-N — a sharp, no-fluff AI executive assistant built for independent funeral directors. Today is ${today}, ${time}.
-
-You help track tasks, remember follow-ups, and keep operations organized. Your users are busy funeral professionals who struggle with task memory, not task execution.
+  return `You are Kare-N — a sharp, no-fluff AI executive assistant for independent funeral directors. Today is ${today}, ${time}.
 
 BEHAVIOR:
-- When the user mentions something to do, capture it immediately as a task.
-- Be direct, candid, brief. No flattery. No filler.
-- On first message of the day, proactively surface overdue and high-priority pending tasks as a daily briefing.
-- Support recurring tasks — if user says "every Monday" or "weekly", note it in the task.
-- Support subtasks — if a task has steps, break them out as subtasks array.
-- Support snoozing — if user says "snooze that" or "remind me later", update dueDate forward.
+- Capture tasks immediately when mentioned.
+- Default due time if not specified: ${defaultTime}.
+- Be direct, brief, no flattery.
+- On first message, give a daily briefing of overdue and high-priority tasks.
+- Support recurring tasks, subtasks, and snoozing.
+- When you detect a family name in a task, include it in a "familyName" field.
 
-When tasks change, ALWAYS include at the end of your response:
+When tasks change, include at end of response:
 \`\`\`tasks
-{"action":"update","tasks":[...full updated task array...]}
+{"action":"update","tasks":[...full updated array...]}
 \`\`\`
 
-If no task changes needed, do NOT include a tasks block.
-
-Each task object:
+Each task:
 {
-  id: string,
-  title: string,
-  notes: string,
-  priority: "high" | "medium" | "low",
-  status: "pending" | "done" | "snoozed",
-  category: string,
-  createdAt: ISO string,
-  dueDate: ISO string or null,
-  completedAt: ISO string or null,
-  recurring: string or null (e.g. "weekly", "every Monday"),
-  subtasks: [{ id, title, done }] or []
+  id, title, notes, priority ("high"|"medium"|"low"),
+  status ("pending"|"done"|"snoozed"),
+  category, createdAt, dueDate (ISO or null),
+  completedAt (ISO or null), recurring (string or null),
+  subtasks ([{id,title,done}]),
+  familyName (string or null),
+  folder (string or null)
 }
 
 Categories: Operations, Families, Compliance, Admin, Marketing, Personal
@@ -92,21 +165,6 @@ const categoryColors = {
   Operations: "#22d3ee", Families: "#a78bfa", Compliance: "#f87171",
   Admin: "#94a3b8", Marketing: "#34d399", Personal: "#fb923c",
 };
-
-function formatDate(iso) {
-  if (!iso) return null;
-  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-function isOverdue(task) {
-  if (!task.dueDate || task.status === "done") return false;
-  return new Date(task.dueDate) < new Date();
-}
-function snoozeDate(days = 1) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  d.setHours(9, 0, 0, 0);
-  return d.toISOString();
-}
 
 // ── Mascot ────────────────────────────────────────────────────────────────────
 function KarenMascot({ size = 48, animated = false }) {
@@ -155,7 +213,7 @@ function KarenMascot({ size = 48, animated = false }) {
 // ── Locked screen ─────────────────────────────────────────────────────────────
 function LockedScreen() {
   return (
-    <div style={{ minHeight: "100dvh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "24px", background: "linear-gradient(135deg, #0f172a 0%, #1a1035 50%, #0f172a 100%)", fontFamily: "'Nunito', sans-serif", padding: "40px 20px", textAlign: "center" }}>
+    <div style={{ minHeight: "100dvh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "24px", background: "linear-gradient(135deg,#0f172a 0%,#1a1035 50%,#0f172a 100%)", fontFamily: "'Nunito',sans-serif", padding: "40px 20px", textAlign: "center" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap'); @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}`}</style>
       <KarenMascot size={80} animated />
       <div>
@@ -199,24 +257,16 @@ function AdminPanel() {
     setTimeout(() => setCopied(null), 2000);
   }
 
-  const s = {
-    page: { minHeight: "100dvh", background: "linear-gradient(135deg,#0f172a 0%,#1a1035 50%,#0f172a 100%)", fontFamily: "'Nunito',sans-serif", color: "#e2e8f0", padding: "24px 20px" },
-    card: { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(167,139,250,0.15)", borderRadius: "16px", padding: "20px", marginBottom: "16px" },
-    input: { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "10px", color: "#e2e8f0", padding: "10px 14px", fontSize: "14px", fontFamily: "inherit", outline: "none", width: "100%" },
-    label: { fontSize: "11px", color: "#64748b", letterSpacing: "1px", textTransform: "uppercase", fontWeight: 700, marginBottom: "8px", display: "block" },
-  };
+  const dark = { page: { minHeight: "100dvh", background: "linear-gradient(135deg,#0f172a 0%,#1a1035 50%,#0f172a 100%)", fontFamily: "'Nunito',sans-serif", color: "#e2e8f0", padding: "24px 20px" }, card: { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(167,139,250,0.15)", borderRadius: "16px", padding: "20px", marginBottom: "16px" }, input: { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "10px", color: "#e2e8f0", padding: "10px 14px", fontSize: "14px", fontFamily: "inherit", outline: "none", width: "100%" }, label: { fontSize: "11px", color: "#64748b", letterSpacing: "1px", textTransform: "uppercase", fontWeight: 700, marginBottom: "8px", display: "block" } };
 
   if (!authed) return (
-    <div style={{ ...s.page, display: "flex", alignItems: "center", justifyContent: "center" }}>
+    <div style={{ ...dark.page, display: "flex", alignItems: "center", justifyContent: "center" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap'); @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}`}</style>
       <div style={{ width: "100%", maxWidth: "360px" }}>
-        <div style={{ textAlign: "center", marginBottom: "32px" }}>
-          <KarenMascot size={60} animated />
-          <div style={{ fontSize: "24px", fontWeight: 800, marginTop: "12px", background: "linear-gradient(90deg,#22d3ee,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>Kare-N Admin</div>
-        </div>
-        <div style={s.card}>
-          <label style={s.label}>Admin Password</label>
-          <input type="password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()} placeholder="Enter password" style={{ ...s.input, marginBottom: "12px", borderColor: pwError ? "#ef4444" : "rgba(167,139,250,0.2)" }} />
+        <div style={{ textAlign: "center", marginBottom: "32px" }}><KarenMascot size={60} animated /><div style={{ fontSize: "24px", fontWeight: 800, marginTop: "12px", background: "linear-gradient(90deg,#22d3ee,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>Kare-N Admin</div></div>
+        <div style={dark.card}>
+          <label style={dark.label}>Admin Password</label>
+          <input type="password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()} placeholder="Enter password" style={{ ...dark.input, marginBottom: "12px", borderColor: pwError ? "#ef4444" : "rgba(167,139,250,0.2)" }} />
           {pwError && <div style={{ color: "#ef4444", fontSize: "12px", marginBottom: "12px" }}>Incorrect password.</div>}
           <button onClick={handleLogin} style={{ background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", borderRadius: "10px", color: "#fff", padding: "11px", cursor: "pointer", fontSize: "14px", fontFamily: "inherit", fontWeight: 700, width: "100%" }}>Enter</button>
         </div>
@@ -225,54 +275,112 @@ function AdminPanel() {
   );
 
   const allMembers = [...members, ...newTokens];
-
   return (
-    <div style={s.page}>
+    <div style={dark.page}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap'); @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}`}</style>
       <div style={{ maxWidth: "600px", margin: "0 auto" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "24px" }}>
-          <KarenMascot size={44} />
-          <div>
-            <div style={{ fontSize: "20px", fontWeight: 800, background: "linear-gradient(90deg,#22d3ee,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>Kare-N Admin</div>
-            <div style={{ fontSize: "11px", color: "#64748b" }}>{allMembers.length} members</div>
-          </div>
-        </div>
-        <div style={s.card}>
-          <label style={s.label}>Add New Member</label>
-          <div style={{ display: "flex", gap: "10px" }}>
-            <input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === "Enter" && addMember()} placeholder="Member name" style={{ ...s.input, flex: 1 }} />
-            <button onClick={addMember} style={{ background: "rgba(34,211,238,0.2)", border: "1px solid rgba(34,211,238,0.4)", borderRadius: "10px", color: "#22d3ee", padding: "9px 18px", cursor: "pointer", fontSize: "13px", fontFamily: "inherit", fontWeight: 700, whiteSpace: "nowrap" }}>+ Add</button>
-          </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "24px" }}><KarenMascot size={44} /><div><div style={{ fontSize: "20px", fontWeight: 800, background: "linear-gradient(90deg,#22d3ee,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>Kare-N Admin</div><div style={{ fontSize: "11px", color: "#64748b" }}>{allMembers.length} members</div></div></div>
+        <div style={dark.card}>
+          <label style={dark.label}>Add New Member</label>
+          <div style={{ display: "flex", gap: "10px" }}><input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === "Enter" && addMember()} placeholder="Member name" style={{ ...dark.input, flex: 1 }} /><button onClick={addMember} style={{ background: "rgba(34,211,238,0.2)", border: "1px solid rgba(34,211,238,0.4)", borderRadius: "10px", color: "#22d3ee", padding: "9px 18px", cursor: "pointer", fontSize: "13px", fontFamily: "inherit", fontWeight: 700, whiteSpace: "nowrap" }}>+ Add</button></div>
         </div>
         {newTokens.length > 0 && (
-          <div style={{ ...s.card, border: "1px solid rgba(34,211,238,0.3)", background: "rgba(34,211,238,0.05)", marginBottom: "16px" }}>
-            <label style={{ ...s.label, color: "#22d3ee" }}>⚠ Add these to VALID_TOKENS in src/App.jsx</label>
-            {newTokens.map(m => (
-              <div key={m.token} style={{ fontFamily: "monospace", fontSize: "12px", color: "#94a3b8", marginBottom: "8px", background: "rgba(0,0,0,0.3)", padding: "10px", borderRadius: "8px" }}>
-                "{m.token}": {"{"} name: "{m.name}" {"}"},
-              </div>
-            ))}
+          <div style={{ ...dark.card, border: "1px solid rgba(34,211,238,0.3)", background: "rgba(34,211,238,0.05)", marginBottom: "16px" }}>
+            <label style={{ ...dark.label, color: "#22d3ee" }}>⚠ Add to VALID_TOKENS in src/App.jsx</label>
+            {newTokens.map(m => <div key={m.token} style={{ fontFamily: "monospace", fontSize: "12px", color: "#94a3b8", marginBottom: "8px", background: "rgba(0,0,0,0.3)", padding: "10px", borderRadius: "8px" }}>"{m.token}": {"{"} name: "{m.name}" {"}"},</div>)}
           </div>
         )}
-        <div style={s.card}>
-          <label style={s.label}>All Members</label>
+        <div style={dark.card}>
+          <label style={dark.label}>All Members</label>
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             {allMembers.map(member => (
               <div key={member.token} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(167,139,250,0.1)", borderRadius: "12px", padding: "14px 16px", display: "flex", alignItems: "center", gap: "12px" }}>
-                <div style={{ width: "36px", height: "36px", borderRadius: "50%", background: "linear-gradient(135deg,#22d3ee44,#a78bfa44)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px", fontWeight: 700, color: "#a78bfa", flexShrink: 0 }}>
-                  {member.name.charAt(0).toUpperCase()}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, fontSize: "14px" }}>{member.name}</div>
-                  <div style={{ fontSize: "10px", color: "#475569", fontFamily: "monospace" }}>{member.token}</div>
-                </div>
-                <button onClick={() => copyUrl(member.token)} style={{ background: copied === member.token ? "rgba(52,211,153,0.2)" : "rgba(34,211,238,0.1)", border: `1px solid ${copied === member.token ? "#34d399" : "rgba(34,211,238,0.3)"}`, borderRadius: "8px", color: copied === member.token ? "#34d399" : "#22d3ee", padding: "6px 12px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit", fontWeight: 700, whiteSpace: "nowrap" }}>
-                  {copied === member.token ? "✓ Copied" : "📋 Copy URL"}
-                </button>
+                <div style={{ width: "36px", height: "36px", borderRadius: "50%", background: "linear-gradient(135deg,#22d3ee44,#a78bfa44)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px", fontWeight: 700, color: "#a78bfa", flexShrink: 0 }}>{member.name.charAt(0).toUpperCase()}</div>
+                <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 700, fontSize: "14px" }}>{member.name}</div><div style={{ fontSize: "10px", color: "#475569", fontFamily: "monospace" }}>{member.token}</div></div>
+                <button onClick={() => copyUrl(member.token)} style={{ background: copied === member.token ? "rgba(52,211,153,0.2)" : "rgba(34,211,238,0.1)", border: `1px solid ${copied === member.token ? "#34d399" : "rgba(34,211,238,0.3)"}`, borderRadius: "8px", color: copied === member.token ? "#34d399" : "#22d3ee", padding: "6px 12px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit", fontWeight: 700, whiteSpace: "nowrap" }}>{copied === member.token ? "✓ Copied" : "📋 Copy URL"}</button>
               </div>
             ))}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Settings modal ────────────────────────────────────────────────────────────
+function SettingsModal({ settings, onSave, onClose, darkMode, tasks, cardBg, cardBorder, textColor, mutedColor }) {
+  const [local, setLocal] = useState({ ...settings });
+  const thisMonth = new Date().getMonth();
+  const thisYear = new Date().getFullYear();
+  const monthlyCount = tasks.filter(t => {
+    if (t.status !== "done" || !t.completedAt) return false;
+    const d = new Date(t.completedAt);
+    return d.getMonth() === thisMonth && d.getFullYear() === thisYear;
+  }).length;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+      <div style={{ background: darkMode ? "#1a1035" : "#fff", border: `1px solid ${cardBorder}`, borderRadius: "20px 20px 0 0", padding: "24px", width: "100%", maxWidth: "480px", maxHeight: "85dvh", overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
+          <div style={{ fontSize: "18px", fontWeight: 800, color: textColor }}>⚙️ Settings</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: mutedColor, cursor: "pointer", fontSize: "22px" }}>×</button>
+        </div>
+
+        {/* Monthly count */}
+        <div style={{ background: "linear-gradient(135deg,#22d3ee22,#a78bfa22)", border: `1px solid ${cardBorder}`, borderRadius: "14px", padding: "16px", marginBottom: "16px", textAlign: "center" }}>
+          <div style={{ fontSize: "42px", fontWeight: 800, background: "linear-gradient(90deg,#22d3ee,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>{monthlyCount}</div>
+          <div style={{ fontSize: "13px", color: mutedColor, fontWeight: 600 }}>tasks completed this month</div>
+          <div style={{ fontSize: "11px", color: mutedColor, marginTop: "4px" }}>That's real work. Keep going.</div>
+        </div>
+
+        {/* Dark mode */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 0", borderBottom: `1px solid ${cardBorder}` }}>
+          <div>
+            <div style={{ fontSize: "14px", fontWeight: 600, color: textColor }}>Appearance</div>
+            <div style={{ fontSize: "11px", color: mutedColor }}>Dark or light theme</div>
+          </div>
+          <button onClick={() => setLocal(s => ({ ...s, darkMode: !s.darkMode }))} style={{ background: local.darkMode ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(167,139,250,0.2)", border: "none", borderRadius: "20px", padding: "6px 16px", cursor: "pointer", color: local.darkMode ? "#fff" : "#a78bfa", fontFamily: "inherit", fontWeight: 700, fontSize: "12px" }}>
+            {local.darkMode ? "🌙 Dark" : "☀️ Light"}
+          </button>
+        </div>
+
+        {/* Default due time */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 0", borderBottom: `1px solid ${cardBorder}` }}>
+          <div>
+            <div style={{ fontSize: "14px", fontWeight: 600, color: textColor }}>Default Due Time</div>
+            <div style={{ fontSize: "11px", color: mutedColor }}>Used when no time is specified</div>
+          </div>
+          <input type="time" value={local.defaultDueTime} onChange={e => setLocal(s => ({ ...s, defaultDueTime: e.target.value }))}
+            style={{ background: cardBg, border: `1px solid ${cardBorder}`, borderRadius: "8px", color: textColor, padding: "6px 10px", fontSize: "13px", fontFamily: "inherit", outline: "none" }} />
+        </div>
+
+        {/* Default category */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 0", borderBottom: `1px solid ${cardBorder}` }}>
+          <div>
+            <div style={{ fontSize: "14px", fontWeight: 600, color: textColor }}>Default Category</div>
+            <div style={{ fontSize: "11px", color: mutedColor }}>Used when no category is detected</div>
+          </div>
+          <select value={local.defaultCategory} onChange={e => setLocal(s => ({ ...s, defaultCategory: e.target.value }))}
+            style={{ background: cardBg, border: `1px solid ${cardBorder}`, borderRadius: "8px", color: textColor, padding: "6px 10px", fontSize: "13px", fontFamily: "inherit", outline: "none" }}>
+            {["Operations", "Families", "Compliance", "Admin", "Marketing", "Personal"].map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+
+        {/* Color legend */}
+        <div style={{ padding: "14px 0", borderBottom: `1px solid ${cardBorder}` }}>
+          <div style={{ fontSize: "14px", fontWeight: 600, color: textColor, marginBottom: "10px" }}>Task Urgency Colors</div>
+          {[["#ff006e", "Due within 24 hours"], ["#ffbe0b", "Due in 24–48 hours"], ["#00b4d8", "Due in 48+ hours"], ["#ef4444", "Overdue"], ["#6366f1", "No due date"]].map(([color, label]) => (
+            <div key={color} style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
+              <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: color, flexShrink: 0 }} />
+              <div style={{ fontSize: "12px", color: mutedColor }}>{label}</div>
+            </div>
+          ))}
+        </div>
+
+        <button onClick={onClose} style={{ width: "100%", marginTop: "16px", background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", borderRadius: "12px", color: "#fff", padding: "13px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "14px" }}
+          onClick={() => { onSave(local); onClose(); }}>
+          Save Settings
+        </button>
       </div>
     </div>
   );
@@ -283,79 +391,92 @@ function KarenMain({ token }) {
   const memberName = VALID_TOKENS[token]?.name?.split(" ")[0] || "there";
   const [tasks, setTasksState] = useState([]);
   const [tasksLoaded, setTasksLoaded] = useState(false);
+  const [settings, setSettings] = useState(loadSettings(token));
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState("chat");
+  const [activeTab, setActiveTab] = useState(0); // 0=chat, 1=tasks, 2=history
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
-  const [darkMode, setDarkMode] = useState(true);
+  const [showSettings, setShowSettings] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [feedbackSent, setFeedbackSent] = useState(false);
   const [listening, setListening] = useState(false);
   const [expandedTask, setExpandedTask] = useState(null);
+  const [historyFolder, setHistoryFolder] = useState("all");
+  const [movingTask, setMovingTask] = useState(null);
+  const [newFolderName, setNewFolderName] = useState("");
   const chatEndRef = useRef(null);
   const inputRef = useRef(null);
   const recognitionRef = useRef(null);
+  const tabsRef = useRef(null);
+  const startXRef = useRef(null);
 
-  // Load tasks from Blob on mount
+  const darkMode = settings.darkMode;
+
   useEffect(() => {
     loadTasks(token).then(loaded => {
-      setTasksState(loaded);
+      const withDefaults = loaded.map(t => ({
+        ...t,
+        dueDate: t.dueDate ? applyDefaultTime(t.dueDate, settings.defaultDueTime) : null,
+        subtasks: t.subtasks || [],
+        familyName: t.familyName || detectFamilyName(t.title),
+        folder: t.folder || null,
+      }));
+      setTasksState(withDefaults);
       setTasksLoaded(true);
     });
   }, [token]);
 
-  // Daily briefing on first load
   useEffect(() => {
     if (!tasksLoaded) return;
     const today = new Date().toDateString();
     const lastBriefing = localStorage.getItem(`karen-briefing-${token}`);
     const overdue = tasks.filter(t => t.status === "pending" && isOverdue(t));
-    const highPriority = tasks.filter(t => t.status === "pending" && t.priority === "high");
+    const pending = tasks.filter(t => t.status === "pending");
     const dueToday = tasks.filter(t => {
       if (!t.dueDate || t.status !== "pending") return false;
       return new Date(t.dueDate).toDateString() === today;
     });
 
     if (lastBriefing === today) {
-      setMessages([{ role: "assistant", content: `Hey ${memberName}. What's on your plate — or want me to pull up what's pending?` }]);
+      setMessages([{ role: "assistant", content: `Hey ${memberName}. What's on your plate?` }]);
       return;
     }
-
     localStorage.setItem(`karen-briefing-${token}`, today);
-
     if (tasks.length === 0) {
-      setMessages([{ role: "assistant", content: `Hey ${memberName}. No tasks logged yet — tell me what you're working on and I'll start tracking it.` }]);
+      setMessages([{ role: "assistant", content: `Hey ${memberName}. No tasks logged yet — tell me what you're working on.` }]);
       return;
     }
-
     let briefing = `Good ${getTimeOfDay()} ${memberName}. Here's where things stand:\n\n`;
-    if (overdue.length > 0) briefing += `⚠️ **${overdue.length} overdue** — ${overdue.map(t => t.title).join(", ")}\n\n`;
-    if (dueToday.length > 0) briefing += `📅 **Due today** — ${dueToday.map(t => t.title).join(", ")}\n\n`;
-    if (highPriority.length > 0) briefing += `🔴 **High priority** — ${highPriority.map(t => t.title).join(", ")}\n\n`;
-    briefing += `${tasks.filter(t => t.status === "pending").length} total pending. What do you want to tackle first?`;
-
+    if (overdue.length > 0) briefing += `⚠️ ${overdue.length} overdue — ${overdue.map(t => t.title).join(", ")}\n\n`;
+    if (dueToday.length > 0) briefing += `📅 Due today — ${dueToday.map(t => t.title).join(", ")}\n\n`;
+    briefing += `${pending.length} total pending. What do you want to tackle first?`;
     setMessages([{ role: "assistant", content: briefing }]);
   }, [tasksLoaded]);
 
   function getTimeOfDay() {
     const h = new Date().getHours();
-    if (h < 12) return "morning";
-    if (h < 17) return "afternoon";
-    return "evening";
+    return h < 12 ? "morning" : h < 17 ? "afternoon" : "evening";
   }
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
 
   function updateTasks(t) {
-    setTasksState(t);
-    saveTasks(token, t);
+    const withDefaults = t.map(task => ({
+      ...task,
+      dueDate: task.dueDate ? applyDefaultTime(task.dueDate, settings.defaultDueTime) : null,
+      subtasks: task.subtasks || [],
+      familyName: task.familyName || detectFamilyName(task.title),
+      folder: task.folder || null,
+    }));
+    setTasksState(withDefaults);
+    saveTasks(token, withDefaults);
   }
 
   function parseTasksFromResponse(text) {
-    const match = text.match(/```tasks\s*([\s\S]*?)```/) || text.match(/```json\s*([\s\S]*?)```/);
+    const match = text.match(/```tasks\s*([\s\S]*?)```/);
     if (!match) return null;
     try {
       const p = JSON.parse(match[1].trim());
@@ -374,11 +495,7 @@ function KarenMain({ token }) {
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setLoading(true);
-
-    const taskContext = tasks.length > 0
-      ? `Current task list:\n${JSON.stringify(tasks, null, 2)}`
-      : "No tasks logged yet.";
-
+    const taskContext = tasks.length > 0 ? `Current tasks:\n${JSON.stringify(tasks, null, 2)}` : "No tasks yet.";
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
@@ -386,7 +503,7 @@ function KarenMain({ token }) {
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
-          system: buildSystemPrompt(taskContext),
+          system: buildSystemPrompt(taskContext, settings.defaultDueTime),
           messages: newMessages.map(m => ({ role: m.role, content: m.content })),
         }),
       });
@@ -403,31 +520,22 @@ function KarenMain({ token }) {
     }
   }
 
-  // Voice input
   function toggleVoice() {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      alert("Voice input isn't supported in this browser. Try Chrome.");
+      alert("Voice input requires Chrome browser.");
       return;
     }
-    if (listening) {
-      recognitionRef.current?.stop();
-      setListening(false);
-      return;
-    }
+    if (listening) { recognitionRef.current?.stop(); setListening(false); return; }
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const recognition = new SR();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.lang = "en-US";
-    recognition.onresult = (e) => {
-      const transcript = e.results[0][0].transcript;
-      setInput(prev => prev ? prev + " " + transcript : transcript);
-      setListening(false);
-    };
-    recognition.onerror = () => setListening(false);
-    recognition.onend = () => setListening(false);
-    recognitionRef.current = recognition;
-    recognition.start();
+    const r = new SR();
+    r.continuous = false;
+    r.interimResults = false;
+    r.lang = "en-US";
+    r.onresult = e => { setInput(p => p ? p + " " + e.results[0][0].transcript : e.results[0][0].transcript); setListening(false); };
+    r.onerror = () => setListening(false);
+    r.onend = () => setListening(false);
+    recognitionRef.current = r;
+    r.start();
     setListening(true);
   }
 
@@ -435,35 +543,37 @@ function KarenMain({ token }) {
     updateTasks(tasks.map(t => t.id === id ? { ...t, status: t.status === "done" ? "pending" : "done", completedAt: t.status === "done" ? null : new Date().toISOString() } : t));
   }
   function deleteTask(id) { updateTasks(tasks.filter(t => t.id !== id)); }
-  function snoozeTask(id, days = 1) {
-    updateTasks(tasks.map(t => t.id === id ? { ...t, dueDate: snoozeDate(days), status: "pending" } : t));
-  }
-  function toggleSubtask(taskId, subtaskId) {
-    updateTasks(tasks.map(t => t.id === taskId ? { ...t, subtasks: (t.subtasks || []).map(s => s.id === subtaskId ? { ...s, done: !s.done } : s) } : t));
+  function snoozeTask(id, hours) { updateTasks(tasks.map(t => t.id === id ? { ...t, dueDate: snoozeDate(hours), status: "pending" } : t)); }
+  function toggleSubtask(taskId, subtaskId) { updateTasks(tasks.map(t => t.id === taskId ? { ...t, subtasks: t.subtasks.map(s => s.id === subtaskId ? { ...s, done: !s.done } : s) } : t)); }
+  function moveToFolder(taskId, folder) { updateTasks(tasks.map(t => t.id === taskId ? { ...t, folder } : t)); setMovingTask(null); }
+
+  function handleSaveSettings(newSettings) {
+    setSettings(newSettings);
+    saveSettings(token, newSettings);
   }
 
   function sendFeedback() {
     if (!feedback.trim()) return;
-    // Log feedback as a task for Clay to review
-    const feedbackTask = {
-      id: `feedback-${Date.now()}`,
-      title: `Member feedback: ${feedback.substring(0, 50)}`,
-      notes: feedback,
-      priority: "medium",
-      status: "pending",
-      category: "Admin",
-      createdAt: new Date().toISOString(),
-      dueDate: null,
-      completedAt: null,
-      recurring: null,
-      subtasks: [],
-    };
-    updateTasks([...tasks, feedbackTask]);
+    const ft = { id: `fb-${Date.now()}`, title: `Feedback: ${feedback.substring(0, 50)}`, notes: feedback, priority: "medium", status: "pending", category: "Admin", createdAt: new Date().toISOString(), dueDate: null, completedAt: null, recurring: null, subtasks: [], familyName: null, folder: null };
+    updateTasks([...tasks, ft]);
     setFeedbackSent(true);
     setFeedback("");
     setTimeout(() => { setShowFeedback(false); setFeedbackSent(false); }, 2000);
   }
 
+  // Swipe gestures for carousel
+  function handleTouchStart(e) { startXRef.current = e.touches[0].clientX; }
+  function handleTouchEnd(e) {
+    if (startXRef.current === null) return;
+    const diff = startXRef.current - e.changedTouches[0].clientX;
+    if (Math.abs(diff) > 50) {
+      if (diff > 0) setActiveTab(t => Math.min(t + 1, 2));
+      else setActiveTab(t => Math.max(t - 1, 0));
+    }
+    startXRef.current = null;
+  }
+
+  const tabs = ["Chat", "Tasks", "History"];
   const pending = tasks.filter(t => t.status === "pending");
   const done = tasks.filter(t => t.status === "done");
   const overdue = pending.filter(isOverdue);
@@ -476,21 +586,25 @@ function KarenMain({ token }) {
     : filter === "snoozed" ? tasks.filter(t => t.status === "snoozed")
     : tasks.filter(t => t.category === filter);
 
-  if (search.trim()) {
-    filteredTasks = filteredTasks.filter(t =>
-      t.title.toLowerCase().includes(search.toLowerCase()) ||
-      (t.notes || "").toLowerCase().includes(search.toLowerCase())
-    );
-  }
+  if (search.trim()) filteredTasks = filteredTasks.filter(t => t.title.toLowerCase().includes(search.toLowerCase()) || (t.notes || "").toLowerCase().includes(search.toLowerCase()));
 
+  // Sort by due date soonest first, then no due date at end
   const sorted = [...filteredTasks].sort((a, b) => {
     if (a.status !== b.status) return a.status === "pending" ? -1 : 1;
-    return ({ high: 0, medium: 1, low: 2 }[a.priority] || 0) - ({ high: 0, medium: 1, low: 2 }[b.priority] || 0);
+    if (a.dueDate && b.dueDate) return new Date(a.dueDate) - new Date(b.dueDate);
+    if (a.dueDate && !b.dueDate) return -1;
+    if (!a.dueDate && b.dueDate) return 1;
+    return 0;
   });
 
-  const bg = darkMode
-    ? "linear-gradient(135deg, #0f172a 0%, #1a1035 50%, #0f172a 100%)"
-    : "linear-gradient(135deg, #f0f9ff 0%, #f5f0ff 50%, #f0f9ff 100%)";
+  // History folders
+  const doneTasks = tasks.filter(t => t.status === "done");
+  const familyFolders = [...new Set(doneTasks.map(t => t.familyName || t.folder).filter(Boolean))];
+  const historyFiltered = historyFolder === "all" ? doneTasks
+    : historyFolder === "unfiled" ? doneTasks.filter(t => !t.familyName && !t.folder)
+    : doneTasks.filter(t => t.familyName === historyFolder || t.folder === historyFolder);
+
+  const bg = darkMode ? "linear-gradient(135deg,#0f172a 0%,#1a1035 50%,#0f172a 100%)" : "linear-gradient(135deg,#f0f9ff 0%,#f5f0ff 50%,#f0f9ff 100%)";
   const textColor = darkMode ? "#e2e8f0" : "#1e293b";
   const mutedColor = darkMode ? "#64748b" : "#94a3b8";
   const cardBg = darkMode ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.8)";
@@ -498,90 +612,97 @@ function KarenMain({ token }) {
   const inputBg = darkMode ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.9)";
 
   return (
-    <div style={{ fontFamily: "'Nunito', sans-serif", background: bg, minHeight: "100dvh", color: textColor, display: "flex", flexDirection: "column", maxWidth: "480px", margin: "0 auto", position: "relative", overflow: "hidden" }}>
+    <div style={{ fontFamily: "'Nunito',sans-serif", background: bg, minHeight: "100dvh", color: textColor, display: "flex", flexDirection: "column", maxWidth: "480px", margin: "0 auto", position: "relative", overflow: "hidden" }}
+      onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
         ::-webkit-scrollbar { width: 3px; }
         ::-webkit-scrollbar-thumb { background: #a78bfa44; border-radius: 2px; }
-        textarea, input { resize: none; }
+        textarea, input, select { resize: none; }
         @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
         @keyframes fadeUp { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
         @keyframes pulse-dot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.8)} }
-        @keyframes pulse-ring { 0%{transform:scale(1);opacity:1} 100%{transform:scale(1.4);opacity:0} }
         .msg-bubble { animation: fadeUp 0.25s ease-out; }
         .task-row:hover .task-actions { opacity: 1 !important; }
         .send-btn:not(:disabled):hover { transform:scale(1.05); box-shadow:0 0 20px #a78bfa66; }
         .tab-btn { transition: all 0.15s; }
-        .tab-btn:hover { background: rgba(167,139,250,0.08); }
         .filter-pill { transition: all 0.15s; cursor: pointer; }
         .filter-pill:hover { transform: translateY(-1px); }
-        .icon-btn { background:none; border:none; cursor:pointer; transition: all 0.15s; }
+        .icon-btn { background:none; border:none; cursor:pointer; transition: all 0.15s; padding: 4px; }
         .icon-btn:hover { transform: scale(1.1); }
+        .stat-box { cursor: pointer; transition: all 0.15s; }
+        .stat-box:hover { transform: scale(1.05); }
+        .stat-box:active { transform: scale(0.95); }
       `}</style>
 
       {/* Header */}
-      <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", gap: "10px", background: darkMode ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.7)", borderBottom: `1px solid ${cardBorder}`, backdropFilter: "blur(10px)", position: "relative", zIndex: 10, flexShrink: 0 }}>
-        <KarenMascot size={44} animated />
+      <div style={{ padding: "10px 14px", display: "flex", alignItems: "center", gap: "10px", background: darkMode ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.7)", borderBottom: `1px solid ${cardBorder}`, backdropFilter: "blur(10px)", position: "relative", zIndex: 10, flexShrink: 0 }}>
+        <KarenMascot size={40} animated />
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: "20px", fontWeight: 800, background: "linear-gradient(90deg,#22d3ee,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>Kare-N</div>
+          <div style={{ fontSize: "18px", fontWeight: 800, background: "linear-gradient(90deg,#22d3ee,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>Kare-N</div>
           <div style={{ fontSize: "10px", color: mutedColor, fontWeight: 500 }}>Hey {memberName} 👋</div>
         </div>
-        <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-          {overdue.length > 0 && <div style={{ background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "8px", padding: "3px 8px", textAlign: "center" }}><div style={{ color: "#ef4444", fontWeight: 700, fontSize: "13px" }}>{overdue.length}</div><div style={{ color: "#ef4444", opacity: 0.7, fontSize: "9px" }}>overdue</div></div>}
-          <div style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "8px", padding: "3px 8px", textAlign: "center" }}><div style={{ color: "#a78bfa", fontWeight: 700, fontSize: "13px" }}>{pending.length}</div><div style={{ color: "#a78bfa", opacity: 0.7, fontSize: "9px" }}>pending</div></div>
-          <button className="icon-btn" onClick={() => setDarkMode(!darkMode)} style={{ fontSize: "18px", padding: "4px" }}>{darkMode ? "☀️" : "🌙"}</button>
-          <button className="icon-btn" onClick={() => setShowFeedback(true)} style={{ fontSize: "18px", padding: "4px" }}>💬</button>
+        <div style={{ display: "flex", gap: "5px", alignItems: "center" }}>
+          {overdue.length > 0 && (
+            <div className="stat-box" onClick={() => { setActiveTab(1); setFilter("overdue"); }} style={{ background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "8px", padding: "3px 8px", textAlign: "center" }}>
+              <div style={{ color: "#ef4444", fontWeight: 700, fontSize: "12px" }}>{overdue.length}</div>
+              <div style={{ color: "#ef4444", opacity: 0.7, fontSize: "9px" }}>overdue</div>
+            </div>
+          )}
+          <div className="stat-box" onClick={() => { setActiveTab(1); setFilter("pending"); }} style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "8px", padding: "3px 8px", textAlign: "center" }}>
+            <div style={{ color: "#a78bfa", fontWeight: 700, fontSize: "12px" }}>{pending.length}</div>
+            <div style={{ color: "#a78bfa", opacity: 0.7, fontSize: "9px" }}>pending</div>
+          </div>
+          <button className="icon-btn" onClick={() => setShowSettings(true)} style={{ fontSize: "18px" }}>⚙️</button>
         </div>
       </div>
 
-      {/* Tabs */}
+      {/* Tab bar */}
       <div style={{ display: "flex", background: darkMode ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.5)", borderBottom: `1px solid ${cardBorder}`, position: "relative", zIndex: 10, flexShrink: 0 }}>
-        {["chat", "tasks", "history"].map(tab => (
-          <button key={tab} className="tab-btn" onClick={() => setActiveTab(tab)} style={{ flex: 1, padding: "10px", background: "none", border: "none", borderBottom: `2px solid ${activeTab === tab ? "#a78bfa" : "transparent"}`, color: activeTab === tab ? "#a78bfa" : mutedColor, cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase" }}>
-            {tab}{tab === "tasks" && pending.length > 0 && <span style={{ marginLeft: "5px", background: "rgba(167,139,250,0.2)", color: "#a78bfa", padding: "1px 6px", borderRadius: "10px", fontSize: "9px" }}>{pending.length}</span>}
+        {tabs.map((tab, i) => (
+          <button key={tab} className="tab-btn" onClick={() => setActiveTab(i)} style={{ flex: 1, padding: "10px", background: "none", border: "none", borderBottom: `2px solid ${activeTab === i ? "#a78bfa" : "transparent"}`, color: activeTab === i ? "#a78bfa" : mutedColor, cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", transition: "all 0.2s" }}>
+            {tab}
+            {tab === "Tasks" && pending.length > 0 && <span style={{ marginLeft: "4px", background: "rgba(167,139,250,0.2)", color: "#a78bfa", padding: "1px 5px", borderRadius: "10px", fontSize: "9px" }}>{pending.length}</span>}
           </button>
         ))}
+        {/* Carousel indicator dots */}
+        <div style={{ position: "absolute", bottom: "-16px", left: "50%", transform: "translateX(-50%)", display: "flex", gap: "4px" }}>
+          {[0, 1, 2].map(i => <div key={i} style={{ width: i === activeTab ? "16px" : "5px", height: "5px", borderRadius: "3px", background: i === activeTab ? "#a78bfa" : "#334155", transition: "all 0.2s" }} />)}
+        </div>
       </div>
 
+      <div style={{ height: "16px", flexShrink: 0 }} />
+
       {/* CHAT */}
-      {activeTab === "chat" && (
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative", zIndex: 5, minHeight: 0 }}>
+      {activeTab === 0 && (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
           <div style={{ flex: 1, overflowY: "auto", padding: "14px", display: "flex", flexDirection: "column", gap: "12px" }}>
             {messages.map((m, i) => (
               <div key={i} className="msg-bubble" style={{ display: "flex", flexDirection: m.role === "user" ? "row-reverse" : "row", gap: "8px", alignItems: "flex-end" }}>
-                {m.role === "assistant" && <div style={{ flexShrink: 0, marginBottom: "2px" }}><KarenMascot size={28} /></div>}
-                <div style={{ maxWidth: "80%", padding: "11px 15px", borderRadius: m.role === "user" ? "18px 18px 4px 18px" : "4px 18px 18px 18px", background: m.role === "user" ? (darkMode ? "linear-gradient(135deg,#1e3a5f,#1a1045)" : "linear-gradient(135deg,#dbeafe,#ede9fe)") : cardBg, border: `1px solid ${m.role === "user" ? "rgba(34,211,238,0.2)" : cardBorder}`, fontSize: "13px", lineHeight: "1.6", color: m.role === "user" ? (darkMode ? "#bae6fd" : "#1e3a5f") : textColor, whiteSpace: "pre-wrap" }}>{m.content}</div>
+                {m.role === "assistant" && <div style={{ flexShrink: 0, marginBottom: "2px" }}><KarenMascot size={26} /></div>}
+                <div style={{ maxWidth: "80%", padding: "10px 14px", borderRadius: m.role === "user" ? "18px 18px 4px 18px" : "4px 18px 18px 18px", background: m.role === "user" ? (darkMode ? "linear-gradient(135deg,#1e3a5f,#1a1045)" : "linear-gradient(135deg,#dbeafe,#ede9fe)") : cardBg, border: `1px solid ${m.role === "user" ? "rgba(34,211,238,0.2)" : cardBorder}`, fontSize: "13px", lineHeight: "1.6", color: m.role === "user" ? (darkMode ? "#bae6fd" : "#1e3a5f") : textColor, whiteSpace: "pre-wrap" }}>{m.content}</div>
               </div>
             ))}
             {loading && (
               <div style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}>
-                <KarenMascot size={28} animated />
-                <div style={{ padding: "12px 16px", background: cardBg, border: `1px solid ${cardBorder}`, borderRadius: "4px 18px 18px 18px", display: "flex", gap: "5px", alignItems: "center" }}>
+                <KarenMascot size={26} animated />
+                <div style={{ padding: "10px 14px", background: cardBg, border: `1px solid ${cardBorder}`, borderRadius: "4px 18px 18px 18px", display: "flex", gap: "5px", alignItems: "center" }}>
                   {[0, 1, 2].map(i => <div key={i} style={{ width: "6px", height: "6px", borderRadius: "50%", background: "linear-gradient(135deg,#22d3ee,#a78bfa)", animation: `pulse-dot 1.2s ${i * 0.2}s infinite` }} />)}
                 </div>
               </div>
             )}
             <div ref={chatEndRef} />
           </div>
-
-          {/* Input bar */}
           <div style={{ padding: "10px 12px", borderTop: `1px solid ${cardBorder}`, background: darkMode ? "rgba(15,23,42,0.9)" : "rgba(255,255,255,0.9)", backdropFilter: "blur(10px)", display: "flex", gap: "8px", alignItems: "flex-end", flexShrink: 0 }}>
             <div style={{ flex: 1, position: "relative" }}>
-              <textarea
-                ref={inputRef} value={input}
-                onChange={e => setInput(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-                placeholder={listening ? "Listening..." : "Tell me what you need to do..."}
-                rows={2}
-                style={{ width: "100%", background: inputBg, border: `1px solid ${listening ? "#a78bfa" : cardBorder}`, borderRadius: "14px", color: textColor, padding: "10px 44px 10px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", lineHeight: "1.5", transition: "border-color 0.2s" }}
-              />
-              {/* Voice button inside textarea */}
-              <button onClick={toggleVoice} style={{ position: "absolute", right: "10px", bottom: "10px", width: "28px", height: "28px", borderRadius: "50%", background: listening ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(167,139,250,0.2)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px", transition: "all 0.2s" }}>
+              <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }} placeholder={listening ? "Listening..." : "Tell me what you need to do..."} rows={2}
+                style={{ width: "100%", background: inputBg, border: `1px solid ${listening ? "#a78bfa" : cardBorder}`, borderRadius: "14px", color: textColor, padding: "10px 44px 10px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", lineHeight: "1.5" }} />
+              <button onClick={toggleVoice} style={{ position: "absolute", right: "10px", bottom: "10px", width: "26px", height: "26px", borderRadius: "50%", background: listening ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(167,139,250,0.2)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "13px" }}>
                 {listening ? "⏹" : "🎙"}
               </button>
             </div>
-            <button className="send-btn" onClick={() => sendMessage()} disabled={loading || !input.trim()} style={{ width: "42px", height: "42px", borderRadius: "14px", background: loading || !input.trim() ? "rgba(255,255,255,0.05)" : "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", cursor: loading || !input.trim() ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "16px", transition: "all 0.2s", flexShrink: 0 }}>
+            <button className="send-btn" onClick={() => sendMessage()} disabled={loading || !input.trim()} style={{ width: "40px", height: "40px", borderRadius: "14px", background: loading || !input.trim() ? "rgba(255,255,255,0.05)" : "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", cursor: loading || !input.trim() ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "15px", transition: "all 0.2s", flexShrink: 0 }}>
               {loading ? "⏳" : "✈️"}
             </button>
           </div>
@@ -589,67 +710,71 @@ function KarenMain({ token }) {
       )}
 
       {/* TASKS */}
-      {activeTab === "tasks" && (
-        <div style={{ flex: 1, overflowY: "auto", padding: "14px", position: "relative", zIndex: 5 }}>
-          {/* Search */}
-          <input
-            value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="🔍 Search tasks..."
-            style={{ width: "100%", background: inputBg, border: `1px solid ${cardBorder}`, borderRadius: "12px", color: textColor, padding: "9px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", marginBottom: "12px" }}
-          />
-
-          {/* Filters */}
-          <div style={{ display: "flex", gap: "5px", flexWrap: "wrap", marginBottom: "14px" }}>
+      {activeTab === 1 && (
+        <div style={{ flex: 1, overflowY: "auto", padding: "14px" }}>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Search tasks..." style={{ width: "100%", background: inputBg, border: `1px solid ${cardBorder}`, borderRadius: "12px", color: textColor, padding: "8px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", marginBottom: "10px" }} />
+          <div style={{ display: "flex", gap: "5px", flexWrap: "wrap", marginBottom: "12px" }}>
             {["all", "pending", "overdue", "snoozed", "done", ...categories].map(f => (
-              <button key={f} className="filter-pill" onClick={() => setFilter(f)} style={{ padding: "4px 12px", background: filter === f ? "linear-gradient(135deg,#22d3ee88,#a78bfa88)" : inputBg, color: filter === f ? "#fff" : mutedColor, border: `1px solid ${filter === f ? "rgba(167,139,250,0.5)" : cardBorder}`, borderRadius: "20px", fontSize: "10px", fontFamily: "inherit", fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase" }}>
-                {f}{f === "overdue" && overdue.length > 0 && <span style={{ marginLeft: "4px", background: "#ef4444", color: "#fff", borderRadius: "10px", padding: "0 4px", fontSize: "9px" }}>{overdue.length}</span>}
+              <button key={f} className="filter-pill" onClick={() => setFilter(f)} style={{ padding: "3px 10px", background: filter === f ? "linear-gradient(135deg,#22d3ee88,#a78bfa88)" : inputBg, color: filter === f ? "#fff" : mutedColor, border: `1px solid ${filter === f ? "rgba(167,139,250,0.5)" : cardBorder}`, borderRadius: "20px", fontSize: "10px", fontFamily: "inherit", fontWeight: 600, textTransform: "uppercase" }}>
+                {f}{f === "overdue" && overdue.length > 0 && <span style={{ marginLeft: "3px", background: "#ef4444", color: "#fff", borderRadius: "10px", padding: "0 4px", fontSize: "8px" }}>{overdue.length}</span>}
               </button>
             ))}
           </div>
 
-          {sorted.length === 0 ? (
-            <div style={{ textAlign: "center", marginTop: "50px" }}>
-              <KarenMascot size={56} animated />
-              <div style={{ color: mutedColor, fontSize: "13px", marginTop: "14px", fontWeight: 500 }}>
-                {search ? "No tasks match that search." : tasks.length === 0 ? "No tasks yet — tell Kare-N what you need to do." : "Nothing in this filter."}
+          {/* Color legend */}
+          <div style={{ display: "flex", gap: "10px", marginBottom: "12px", flexWrap: "wrap" }}>
+            {[["#ff006e", "<24h"], ["#ffbe0b", "24-48h"], ["#00b4d8", "48h+"], ["#ef4444", "overdue"]].map(([c, l]) => (
+              <div key={c} style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: c }} />
+                <span style={{ fontSize: "9px", color: mutedColor, fontWeight: 600 }}>{l}</span>
               </div>
-            </div>
+            ))}
+          </div>
+
+          {sorted.length === 0 ? (
+            <div style={{ textAlign: "center", marginTop: "40px" }}><KarenMascot size={50} animated /><div style={{ color: mutedColor, fontSize: "13px", marginTop: "12px" }}>{search ? "No match." : tasks.length === 0 ? "No tasks yet." : "Nothing here."}</div></div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "9px" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               {sorted.map(task => (
-                <div key={task.id} className="task-row" style={{ background: cardBg, border: `1px solid ${isOverdue(task) ? "rgba(239,68,68,0.3)" : cardBorder}`, borderLeft: `3px solid ${task.status === "done" ? "#1e293b" : priorityColors[task.priority]}`, borderRadius: "14px", padding: "12px 14px", opacity: task.status === "done" ? 0.45 : 1, transition: "opacity 0.2s" }}>
-                  <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
-                    <button onClick={() => toggleTask(task.id)} style={{ width: "20px", height: "20px", minWidth: "20px", borderRadius: "50%", border: `2px solid ${task.status === "done" ? "#a78bfa" : "rgba(167,139,250,0.3)"}`, background: task.status === "done" ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", marginTop: "2px", flexShrink: 0 }}>
-                      {task.status === "done" && <span style={{ fontSize: "10px", color: "#fff", fontWeight: 700 }}>✓</span>}
+                <div key={task.id} className="task-row" style={{ background: cardBg, border: `1px solid ${isOverdue(task) ? "rgba(239,68,68,0.2)" : cardBorder}`, borderLeft: `4px solid ${getUrgencyColor(task)}`, borderRadius: "14px", padding: "11px 12px", opacity: task.status === "done" ? 0.45 : 1 }}>
+                  <div style={{ display: "flex", gap: "9px", alignItems: "flex-start" }}>
+                    <button onClick={() => toggleTask(task.id)} style={{ width: "19px", height: "19px", minWidth: "19px", borderRadius: "50%", border: `2px solid ${task.status === "done" ? "#a78bfa" : "rgba(167,139,250,0.3)"}`, background: task.status === "done" ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", marginTop: "2px", flexShrink: 0 }}>
+                      {task.status === "done" && <span style={{ fontSize: "9px", color: "#fff", fontWeight: 700 }}>✓</span>}
                     </button>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: "13px", fontWeight: 600, color: task.status === "done" ? mutedColor : textColor, textDecoration: task.status === "done" ? "line-through" : "none", marginBottom: "4px", cursor: "pointer" }} onClick={() => setExpandedTask(expandedTask === task.id ? null : task.id)}>
+                      <div style={{ fontSize: "13px", fontWeight: 600, color: task.status === "done" ? mutedColor : textColor, textDecoration: task.status === "done" ? "line-through" : "none", marginBottom: "3px", cursor: "pointer" }} onClick={() => setExpandedTask(expandedTask === task.id ? null : task.id)}>
                         {task.title}
-                        {task.recurring && <span style={{ marginLeft: "6px", fontSize: "10px", color: "#34d399" }}>🔄 {task.recurring}</span>}
-                        {task.subtasks?.length > 0 && <span style={{ marginLeft: "6px", fontSize: "10px", color: mutedColor }}>({task.subtasks.filter(s => s.done).length}/{task.subtasks.length})</span>}
+                        {task.recurring && <span style={{ marginLeft: "5px", fontSize: "9px", color: "#34d399" }}>🔄</span>}
+                        {task.subtasks?.length > 0 && <span style={{ marginLeft: "5px", fontSize: "9px", color: mutedColor }}>({task.subtasks.filter(s => s.done).length}/{task.subtasks.length})</span>}
                       </div>
+
+                      {/* Due time — bold and prominent */}
+                      {task.dueDate && (
+                        <div style={{ fontSize: "12px", fontWeight: 800, color: getUrgencyColor(task), marginBottom: "5px" }}>
+                          {formatDueDate(task.dueDate)} at {formatDueTime(task.dueDate)}
+                        </div>
+                      )}
 
                       {expandedTask === task.id && (
                         <div style={{ marginBottom: "8px" }}>
-                          {task.notes && <div style={{ fontSize: "12px", color: mutedColor, marginBottom: "8px", lineHeight: 1.5 }}>{task.notes}</div>}
+                          {task.notes && <div style={{ fontSize: "11px", color: mutedColor, marginBottom: "7px", lineHeight: 1.5 }}>{task.notes}</div>}
                           {task.subtasks?.length > 0 && (
-                            <div style={{ display: "flex", flexDirection: "column", gap: "5px", marginBottom: "8px" }}>
+                            <div style={{ display: "flex", flexDirection: "column", gap: "4px", marginBottom: "8px" }}>
                               {task.subtasks.map(sub => (
-                                <div key={sub.id} style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                                  <button onClick={() => toggleSubtask(task.id, sub.id)} style={{ width: "16px", height: "16px", minWidth: "16px", borderRadius: "4px", border: `2px solid ${sub.done ? "#a78bfa" : "rgba(167,139,250,0.3)"}`, background: sub.done ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                    {sub.done && <span style={{ fontSize: "8px", color: "#fff", fontWeight: 700 }}>✓</span>}
+                                <div key={sub.id} style={{ display: "flex", gap: "7px", alignItems: "center" }}>
+                                  <button onClick={() => toggleSubtask(task.id, sub.id)} style={{ width: "14px", height: "14px", minWidth: "14px", borderRadius: "3px", border: `2px solid ${sub.done ? "#a78bfa" : "rgba(167,139,250,0.3)"}`, background: sub.done ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                    {sub.done && <span style={{ fontSize: "7px", color: "#fff", fontWeight: 700 }}>✓</span>}
                                   </button>
-                                  <span style={{ fontSize: "12px", color: sub.done ? mutedColor : textColor, textDecoration: sub.done ? "line-through" : "none" }}>{sub.title}</span>
+                                  <span style={{ fontSize: "11px", color: sub.done ? mutedColor : textColor, textDecoration: sub.done ? "line-through" : "none" }}>{sub.title}</span>
                                 </div>
                               ))}
                             </div>
                           )}
-                          {/* Snooze options */}
                           {task.status === "pending" && (
-                            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                            <div style={{ display: "flex", gap: "5px", flexWrap: "wrap", marginBottom: "6px" }}>
                               <span style={{ fontSize: "10px", color: mutedColor, alignSelf: "center" }}>Snooze:</span>
-                              {[["1d", 1], ["3d", 3], ["1w", 7]].map(([label, days]) => (
-                                <button key={label} onClick={() => snoozeTask(task.id, days)} style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "6px", color: "#a78bfa", padding: "2px 8px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", fontWeight: 600 }}>{label}</button>
+                              {[["1hr", 1], ["4hr", 4], ["12hr", 12]].map(([label, hrs]) => (
+                                <button key={label} onClick={() => snoozeTask(task.id, hrs)} style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "6px", color: "#a78bfa", padding: "2px 8px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", fontWeight: 700 }}>{label}</button>
                               ))}
                             </div>
                           )}
@@ -657,13 +782,13 @@ function KarenMain({ token }) {
                       )}
 
                       <div style={{ display: "flex", gap: "5px", flexWrap: "wrap", alignItems: "center" }}>
-                        <span style={{ fontSize: "9px", fontWeight: 700, textTransform: "uppercase", color: categoryColors[task.category] || mutedColor, background: `${categoryColors[task.category] || mutedColor}18`, border: `1px solid ${categoryColors[task.category] || mutedColor}33`, padding: "2px 8px", borderRadius: "20px" }}>{task.category}</span>
+                        <span style={{ fontSize: "9px", fontWeight: 700, textTransform: "uppercase", color: categoryColors[task.category] || mutedColor, background: `${categoryColors[task.category] || mutedColor}18`, border: `1px solid ${categoryColors[task.category] || mutedColor}33`, padding: "1px 7px", borderRadius: "20px" }}>{task.category}</span>
                         <span style={{ fontSize: "9px", fontWeight: 600, color: priorityColors[task.priority], textTransform: "uppercase" }}>{task.priority}</span>
-                        {task.dueDate && <span style={{ fontSize: "9px", color: isOverdue(task) ? "#ef4444" : mutedColor, fontWeight: 600 }}>{isOverdue(task) ? "⚠ " : "📅 "}{formatDate(task.dueDate)}</span>}
+                        {task.familyName && <span style={{ fontSize: "9px", color: "#a78bfa" }}>👨‍👩‍👧 {task.familyName}</span>}
                       </div>
                     </div>
-                    <div className="task-actions" style={{ opacity: 0, display: "flex", gap: "4px", flexShrink: 0, transition: "opacity 0.15s" }}>
-                      <button onClick={() => deleteTask(task.id)} style={{ background: "none", border: "none", color: mutedColor, cursor: "pointer", fontSize: "15px", padding: "0 3px" }}>×</button>
+                    <div className="task-actions" style={{ opacity: 0, display: "flex", gap: "3px", flexShrink: 0, transition: "opacity 0.15s" }}>
+                      <button onClick={() => deleteTask(task.id)} style={{ background: "none", border: "none", color: mutedColor, cursor: "pointer", fontSize: "14px", padding: "0 2px" }}>×</button>
                     </div>
                   </div>
                 </div>
@@ -674,30 +799,55 @@ function KarenMain({ token }) {
       )}
 
       {/* HISTORY */}
-      {activeTab === "history" && (
-        <div style={{ flex: 1, overflowY: "auto", padding: "14px", position: "relative", zIndex: 5 }}>
-          <div style={{ fontSize: "11px", color: mutedColor, letterSpacing: "1px", textTransform: "uppercase", fontWeight: 700, marginBottom: "14px" }}>
-            Completed Tasks — {done.length} total
-          </div>
-          {done.length === 0 ? (
-            <div style={{ textAlign: "center", marginTop: "50px" }}>
-              <KarenMascot size={56} animated />
-              <div style={{ color: mutedColor, fontSize: "13px", marginTop: "14px" }}>Nothing completed yet. Go get after it.</div>
+      {activeTab === 2 && (
+        <div style={{ flex: 1, overflowY: "auto", padding: "14px" }}>
+          {/* Folder tabs */}
+          <div style={{ display: "flex", gap: "5px", flexWrap: "wrap", marginBottom: "14px" }}>
+            {["all", "unfiled", ...familyFolders].map(f => (
+              <button key={f} className="filter-pill" onClick={() => setHistoryFolder(f)} style={{ padding: "3px 10px", background: historyFolder === f ? "linear-gradient(135deg,#22d3ee88,#a78bfa88)" : inputBg, color: historyFolder === f ? "#fff" : mutedColor, border: `1px solid ${historyFolder === f ? "rgba(167,139,250,0.5)" : cardBorder}`, borderRadius: "20px", fontSize: "10px", fontFamily: "inherit", fontWeight: 600, textTransform: "uppercase" }}>
+                {f === "all" ? `All (${doneTasks.length})` : f === "unfiled" ? "Unfiled" : `👨‍👩‍👧 ${f}`}
+              </button>
+            ))}
+            {/* Add new folder */}
+            <div style={{ display: "flex", gap: "4px" }}>
+              <input value={newFolderName} onChange={e => setNewFolderName(e.target.value)} placeholder="+ Folder" style={{ background: inputBg, border: `1px solid ${cardBorder}`, borderRadius: "20px", color: textColor, padding: "3px 10px", fontSize: "10px", fontFamily: "inherit", outline: "none", width: "80px" }} />
+              {newFolderName && <button onClick={() => { if (newFolderName.trim()) { setHistoryFolder(newFolderName.trim()); setNewFolderName(""); } }} style={{ background: "rgba(34,211,238,0.2)", border: "none", borderRadius: "20px", color: "#22d3ee", padding: "3px 8px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", fontWeight: 700 }}>✓</button>}
             </div>
+          </div>
+
+          {historyFiltered.length === 0 ? (
+            <div style={{ textAlign: "center", marginTop: "40px" }}><KarenMascot size={50} animated /><div style={{ color: mutedColor, fontSize: "13px", marginTop: "12px" }}>Nothing here yet.</div></div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              {done.sort((a, b) => new Date(b.completedAt || b.createdAt) - new Date(a.completedAt || a.createdAt)).map(task => (
-                <div key={task.id} style={{ background: cardBg, border: `1px solid ${cardBorder}`, borderLeft: "3px solid #1e293b", borderRadius: "12px", padding: "10px 14px", opacity: 0.6 }}>
-                  <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                    <span style={{ fontSize: "14px" }}>✅</span>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: "13px", fontWeight: 600, textDecoration: "line-through", color: mutedColor }}>{task.title}</div>
-                      <div style={{ fontSize: "10px", color: mutedColor, marginTop: "2px" }}>
-                        {task.completedAt ? `Completed ${formatDate(task.completedAt)}` : "Completed"} · {task.category}
+              {historyFiltered.sort((a, b) => new Date(b.completedAt || b.createdAt) - new Date(a.completedAt || a.createdAt)).map(task => (
+                <div key={task.id} style={{ background: cardBg, border: `1px solid ${cardBorder}`, borderLeft: "3px solid #1e293b", borderRadius: "12px", padding: "10px 12px", opacity: 0.7 }}>
+                  <div style={{ display: "flex", gap: "9px", alignItems: "center" }}>
+                    <span style={{ fontSize: "13px" }}>✅</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "12px", fontWeight: 600, textDecoration: "line-through", color: mutedColor }}>{task.title}</div>
+                      <div style={{ fontSize: "10px", color: mutedColor, marginTop: "2px", display: "flex", gap: "8px" }}>
+                        <span>{task.completedAt ? formatDueDate(task.completedAt) : "Completed"}</span>
+                        {task.familyName && <span>👨‍👩‍👧 {task.familyName}</span>}
+                        {task.folder && <span>📁 {task.folder}</span>}
                       </div>
                     </div>
-                    <button onClick={() => toggleTask(task.id)} style={{ background: "none", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "6px", color: "#a78bfa", padding: "3px 8px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit" }}>Reopen</button>
+                    <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                      <button onClick={() => toggleTask(task.id)} style={{ background: "none", border: `1px solid ${cardBorder}`, borderRadius: "6px", color: "#a78bfa", padding: "2px 7px", cursor: "pointer", fontSize: "9px", fontFamily: "inherit" }}>↩</button>
+                      <button onClick={() => setMovingTask(movingTask === task.id ? null : task.id)} style={{ background: "none", border: `1px solid ${cardBorder}`, borderRadius: "6px", color: mutedColor, padding: "2px 7px", cursor: "pointer", fontSize: "9px", fontFamily: "inherit" }}>📁</button>
+                    </div>
                   </div>
+                  {movingTask === task.id && (
+                    <div style={{ marginTop: "8px", display: "flex", gap: "5px", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: "10px", color: mutedColor, alignSelf: "center" }}>Move to:</span>
+                      {[...familyFolders, ...(newFolderName ? [newFolderName] : [])].map(folder => (
+                        <button key={folder} onClick={() => moveToFolder(task.id, folder)} style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "6px", color: "#a78bfa", padding: "2px 8px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", fontWeight: 600 }}>{folder}</button>
+                      ))}
+                      <div style={{ display: "flex", gap: "3px" }}>
+                        <input value={newFolderName} onChange={e => setNewFolderName(e.target.value)} placeholder="New folder..." style={{ background: inputBg, border: `1px solid ${cardBorder}`, borderRadius: "6px", color: textColor, padding: "2px 7px", fontSize: "10px", fontFamily: "inherit", outline: "none", width: "90px" }} />
+                        {newFolderName && <button onClick={() => moveToFolder(task.id, newFolderName.trim())} style={{ background: "rgba(34,211,238,0.2)", border: "none", borderRadius: "6px", color: "#22d3ee", padding: "2px 7px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", fontWeight: 700 }}>✓</button>}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -705,16 +855,19 @@ function KarenMain({ token }) {
         </div>
       )}
 
+      {/* Settings modal */}
+      {showSettings && (
+        <SettingsModal settings={settings} onSave={handleSaveSettings} onClose={() => setShowSettings(false)} darkMode={darkMode} tasks={tasks} cardBg={cardBg} cardBorder={cardBorder} textColor={textColor} mutedColor={mutedColor} />
+      )}
+
       {/* Feedback modal */}
       {showFeedback && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
           <div style={{ background: darkMode ? "#1a1035" : "#fff", border: `1px solid ${cardBorder}`, borderRadius: "20px", padding: "24px", width: "100%", maxWidth: "360px" }}>
             <div style={{ fontSize: "16px", fontWeight: 800, color: textColor, marginBottom: "16px" }}>💬 Send Feedback</div>
-            {feedbackSent ? (
-              <div style={{ textAlign: "center", padding: "20px", color: "#34d399", fontWeight: 700 }}>✓ Feedback sent!</div>
-            ) : (
+            {feedbackSent ? <div style={{ textAlign: "center", padding: "20px", color: "#34d399", fontWeight: 700 }}>✓ Sent!</div> : (
               <>
-                <textarea value={feedback} onChange={e => setFeedback(e.target.value)} placeholder="What's working, what's not, what do you need..." rows={4} style={{ width: "100%", background: inputBg, border: `1px solid ${cardBorder}`, borderRadius: "12px", color: textColor, padding: "10px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", lineHeight: "1.5", marginBottom: "12px" }} />
+                <textarea value={feedback} onChange={e => setFeedback(e.target.value)} placeholder="What's working, what's not..." rows={4} style={{ width: "100%", background: inputBg, border: `1px solid ${cardBorder}`, borderRadius: "12px", color: textColor, padding: "10px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", lineHeight: "1.5", marginBottom: "12px" }} />
                 <div style={{ display: "flex", gap: "10px" }}>
                   <button onClick={() => setShowFeedback(false)} style={{ flex: 1, background: "none", border: `1px solid ${cardBorder}`, borderRadius: "10px", color: mutedColor, padding: "10px", cursor: "pointer", fontFamily: "inherit", fontWeight: 600, fontSize: "13px" }}>Cancel</button>
                   <button onClick={sendFeedback} style={{ flex: 1, background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", borderRadius: "10px", color: "#fff", padding: "10px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "13px" }}>Send</button>
