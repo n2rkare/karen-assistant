@@ -27,7 +27,6 @@ async function saveTasks(token, tasks) {
   } catch (_) {}
   try { localStorage.setItem(`karen-tasks-${token}`, JSON.stringify(tasks)); } catch (_) {}
 }
-
 async function loadTasks(token) {
   try {
     const res = await fetch(`/api/chat?token=${encodeURIComponent(token)}`);
