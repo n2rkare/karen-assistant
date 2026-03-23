@@ -17,21 +17,7 @@ function generateToken() {
 }
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
-async function saveTasks(token, tasks) {
-  console.log("SAVING TASKS TO BLOB", token, tasks.length);
-  try {
-    const res = await fetch("/api/chat", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, tasks }),
-    });
-    const data = await res.json();
-    console.log("BLOB SAVE RESULT", data);
-  } catch (err) {
-    console.log("BLOB SAVE ERROR", err);
-  }
-  try { localStorage.setItem(`karen-tasks-${token}`, JSON.stringify(tasks)); } catch (_) {}
-}
+
 async function loadTasks(token) {
   try {
     const res = await fetch(`/api/chat?token=${encodeURIComponent(token)}`);
@@ -467,6 +453,22 @@ function KarenMain({ token }) {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
 
+  async function saveTasks(t) {
+    console.log("SAVING TASKS", token, t.length);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, tasks: t }),
+      });
+      const data = await res.json();
+      console.log("SAVE RESULT", data);
+    } catch (err) {
+      console.log("SAVE ERROR", err);
+    }
+    try { localStorage.setItem(`karen-tasks-${token}`, JSON.stringify(t)); } catch (_) {}
+  }
+
   function updateTasks(t) {
     const withDefaults = t.map(task => ({
       ...task,
@@ -476,7 +478,7 @@ function KarenMain({ token }) {
       folder: task.folder || null,
     }));
     setTasksState(withDefaults);
-    saveTasks(token, withDefaults);
+    saveTasks(withDefaults);
   }
   function parseTasksFromResponse(text) {
     const match = text.match(/```tasks\s*([\s\S]*?)```/);
