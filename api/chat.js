@@ -10,8 +10,9 @@ export default async function handler(req, res) {
       const { token, tasks } = req.body;
       if (!token) return res.status(400).json({ error: 'Missing token' });
       const blob = await put(`tasks/${token}.json`, JSON.stringify(tasks), {
-        access: 'public',
         allowOverwrite: true,
+        access: 'public',
+        token: process.env.BLOB_READ_WRITE_TOKEN,
       });
       return res.status(200).json({ ok: true, url: blob.url });
     } catch (err) {
