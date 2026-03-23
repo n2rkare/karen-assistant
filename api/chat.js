@@ -1,4 +1,4 @@
-import { put, get } from '@vercel/blob';
+import { put, list } from '@vercel/blob';
 
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
@@ -24,10 +24,12 @@ export default async function handler(req, res) {
     try {
       const { token } = req.query;
       if (!token) return res.status(400).json({ error: 'Missing token' });
-      const response = await fetch(
-        `https://blob.vercel-storage.com/tasks/${token}.json`,
-        { headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` } }
-      );
+      const { blobs } = await list({
+        prefix: `tasks/${token}.json`,
+        token: process.env.BLOB_READ_WRITE_TOKEN,
+      });
+      if (!blobs || blobs.length === 0) return res.status(200).json({ tasks: [] });
+      const response = await fetch(blobs[0].url);
       if (!response.ok) return res.status(200).json({ tasks: [] });
       const tasks = await response.json();
       return res.status(200).json({ tasks });
