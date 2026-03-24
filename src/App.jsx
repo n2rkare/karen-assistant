@@ -512,11 +512,18 @@ function KarenMain({ token }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          token,
           model: "claude-sonnet-4-20250514",
           max_tokens: 1500,
           system: buildSystemPrompt(taskContext, settings.defaultDueTime, templates),
           messages: newMessages.map(m => ({ role: m.role, content: m.content })),
         }),
+      });
+      const data = await res.json();
+      const raw = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
+      setMessages(prev => [...prev, { role: "assistant", content: raw }]);
+      const reloaded = await loadTasks(token);
+      if (reloaded.length > 0) updateTasks(reloaded);
       });
       const data = await res.json();
       const raw = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
