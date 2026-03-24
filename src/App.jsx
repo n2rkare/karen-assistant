@@ -519,21 +519,11 @@ function KarenMain({ token }) {
           messages: newMessages.map(m => ({ role: m.role, content: m.content })),
         }),
       });
-      const data = await res.json();
-      const raw = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
-      setMessages(prev => [...prev, { role: "assistant", content: raw }]);
-      const reloaded = await loadTasks(token);
-      if (reloaded.length > 0) updateTasks(reloaded);
-      });
-      const data = await res.json();
-      const raw = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
+     const data = await res.json();
+const raw = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
 setMessages(prev => [...prev, { role: "assistant", content: raw }]);
-// Reload tasks from blob since server saved them
 const reloaded = await loadTasks(token);
 if (reloaded.length > 0) updateTasks(reloaded);
-      const raw = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
-      
-      setMessages(prev => [...prev, { role: "assistant", content: cleanText(raw) }]);
     } catch {
       setMessages(prev => [...prev, { role: "assistant", content: "Connection error. Try again." }]);
     } finally {
