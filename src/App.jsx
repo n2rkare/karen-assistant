@@ -525,8 +525,7 @@ setMessages(prev => [...prev, { role: "assistant", content: raw }]);
 const reloaded = await loadTasks(token);
 if (reloaded.length > 0) updateTasks(reloaded);
       const raw = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "No response.";
-      const updatedTasks = parseTasksFromResponse(raw);
-      if (updatedTasks) updateTasks(updatedTasks);
+      
       setMessages(prev => [...prev, { role: "assistant", content: cleanText(raw) }]);
     } catch {
       setMessages(prev => [...prev, { role: "assistant", content: "Connection error. Try again." }]);
