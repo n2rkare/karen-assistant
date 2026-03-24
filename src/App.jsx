@@ -494,11 +494,8 @@ function KarenMain({ token }) {
     return null;
   }
 
-  function cleanText(text) {
-    return text
-      .replace(/`{3}tasks[\s\S]*?`{3}/g, "")
-      .replace(/```tasks[\s\S]*?```/g, "")
-      .trim();
+ function cleanText(text) {
+    return text.replace(/```tasks[\s\S]*?```/g, "").trim();
   }
 
   // ── Send message ──────────────────────────────────────────────────────────
