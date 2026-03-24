@@ -196,9 +196,9 @@ BEHAVIOR:
 - Detect family names in task titles automatically.
 
 TASK JSON — include at end of response when tasks change:
-\`\`\`tasks
+%%TASKS_START%%
 {"action":"update","tasks":[...full updated array...]}
-\`\`\`
+%%TASKS_END%%
 
 Each task:
 {
@@ -485,7 +485,7 @@ function KarenMain({ token }) {
 
   // ── Parse AI response ─────────────────────────────────────────────────────
   function parseTasksFromResponse(text) {
-    const match = text.match(/`{3}tasks\s*([\s\S]*?)`{3}/);
+    const match = text.match(/%%TASKS_START%%([\s\S]*?)%%TASKS_END%%/);
     if (!match) return null;
     try {
       const p = JSON.parse(match[1].trim());
@@ -495,9 +495,8 @@ function KarenMain({ token }) {
   }
 
  function cleanText(text) {
-    return text.replace(/```tasks[\s\S]*?```/g, "").trim();
+    return text.replace(/%%TASKS_START%%[\s\S]*?%%TASKS_END%%/g, "").trim();
   }
-
   // ── Send message ──────────────────────────────────────────────────────────
   async function sendMessage(overrideText) {
     const text = (overrideText || input).trim();
