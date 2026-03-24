@@ -37,6 +37,7 @@ export default async function handler(req, res) {
 
   if (req.method === 'POST') {
     try {
+      const { token, ...body } = req.body;
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -44,9 +45,39 @@ export default async function handler(req, res) {
           'x-api-key': process.env.VITE_ANTHROPIC_API_KEY,
           'anthropic-version': '2023-06-01',
         },
-        body: JSON.stringify(req.body),
+        body: JSON.stringify(body),
       });
       const data = await response.json();
+      
+      // Extract and save tasks server-side
+      const fullText = data.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
+      const taskMatch = fullText.match(/%%TASKS_START%%([\s\S]*?)%%TASKS_END%%/) || 
+                        fullText.match(/```tasks([\s\S]*?)```/);
+      
+      if (taskMatch && token) {
+        try {
+          const parsed = JSON.parse(taskMatch[1].trim());
+          if (parsed.action === 'update' && Array.isArray(parsed.tasks)) {
+            await put(`tasks-${token}.json`, JSON.stringify(parsed.tasks), {
+              access: 'public',
+              allowOverwrite: true,
+              addRandomSuffix: false,
+            });
+          }
+        } catch (_) {}
+      }
+
+      // Strip task block from response before sending to client
+      const cleanedText = fullText
+        .replace(/%%TASKS_START%%[\s\S]*?%%TASKS_END%%/g, '')
+        .replace(/```tasks[\s\S]*?```/g, '')
+        .trim();
+
+      // Replace content with cleaned text
+      if (data.content) {
+        data.content = [{ type: 'text', text: cleanedText }];
+      }
+
       return res.status(200).json(data);
     } catch (err) {
       return res.status(500).json({ error: 'API call failed', detail: err.message });
