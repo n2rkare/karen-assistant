@@ -5,21 +5,7 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  if (req.method === 'PUT') {
-    try {
-      const { token, tasks } = req.body;
-      if (!token) return res.status(400).json({ error: 'Missing token' });
-      const blob = await put(`tasks-${token}.json`, JSON.stringify(tasks), {
-        access: 'public',
-        allowOverwrite: true,
-        addRandomSuffix: false,
-      });
-      return res.status(200).json({ ok: true, url: blob.url });
-    } catch (err) {
-      return res.status(500).json({ error: 'Save failed', detail: err.message });
-    }
-  }
-
+  // ── Load tasks ──────────────────────────────────────────────────────────────
   if (req.method === 'GET') {
     try {
       const { token } = req.query;
@@ -30,14 +16,32 @@ export default async function handler(req, res) {
       if (!response.ok) return res.status(200).json({ tasks: [] });
       const tasks = await response.json();
       return res.status(200).json({ tasks });
-    } catch (err) {
-      return res.status(200).json({ tasks: [], error: err.message });
+    } catch {
+      return res.status(200).json({ tasks: [] });
     }
   }
 
+  // ── Save tasks directly ─────────────────────────────────────────────────────
+  if (req.method === 'PUT') {
+    try {
+      const { token, tasks } = req.body;
+      if (!token) return res.status(400).json({ error: 'Missing token' });
+      await put(`tasks-${token}.json`, JSON.stringify(tasks), {
+        access: 'public',
+        allowOverwrite: true,
+        addRandomSuffix: false,
+      });
+      return res.status(200).json({ ok: true });
+    } catch (err) {
+      return res.status(500).json({ error: 'Save failed', detail: err.message });
+    }
+  }
+
+  // ── AI chat with server-side task extraction ────────────────────────────────
   if (req.method === 'POST') {
     try {
       const { token, ...body } = req.body;
+
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -47,12 +51,13 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify(body),
       });
+
       const data = await response.json();
-      
-      // Extract and save tasks server-side
       const fullText = data.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
-      const taskMatch = fullText.match(/%%TASKS_START%%([\s\S]*?)%%TASKS_END%%/) || 
-                        fullText.match(/```tasks([\s\S]*?)```/);
+
+      // Try to extract tasks from the response
+      let tasksSaved = false;
+      const taskMatch = fullText.match(/TASK_DATA_START\s*([\s\S]*?)\s*TASK_DATA_END/);
       
       if (taskMatch && token) {
         try {
@@ -63,22 +68,21 @@ export default async function handler(req, res) {
               allowOverwrite: true,
               addRandomSuffix: false,
             });
+            tasksSaved = true;
           }
         } catch (_) {}
       }
 
-      // Strip task block from response before sending to client
+      // Clean the response text - remove task data block
       const cleanedText = fullText
-        .replace(/%%TASKS_START%%[\s\S]*?%%TASKS_END%%/g, '')
-        .replace(/```tasks[\s\S]*?```/g, '')
+        .replace(/TASK_DATA_START[\s\S]*?TASK_DATA_END/g, '')
         .trim();
 
-      // Replace content with cleaned text
-      if (data.content) {
-        data.content = [{ type: 'text', text: cleanedText }];
-      }
-
-      return res.status(200).json(data);
+      return res.status(200).json({
+        content: [{ type: 'text', text: cleanedText }],
+        cleanedText,
+        tasksSaved,
+      });
     } catch (err) {
       return res.status(500).json({ error: 'API call failed', detail: err.message });
     }
