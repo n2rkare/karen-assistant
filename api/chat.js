@@ -72,9 +72,11 @@ export default async function handler(req, res) {
       const data = await response.json();
       const fullText = data.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
 
-      // Step 1 — extract tasks FIRST before any cleaning
+      // Step 1 — extract tasks FIRST before any cleaning, handle both delimiter formats
       let tasksSaved = false;
-      const taskMatch = fullText.match(/TASK_DATA_START\s*([\s\S]*?)\s*TASK_DATA_END/);
+      const taskMatch =
+        fullText.match(/TASK_DATA_START\s*([\s\S]*?)\s*TASK_DATA_END/) ||
+        fullText.match(/```tasks\s*([\s\S]*?)```/);
 
       if (taskMatch && token) {
         try {
@@ -90,10 +92,12 @@ export default async function handler(req, res) {
         } catch (_) {}
       }
 
-      // Step 2 — clean AFTER extraction
+      // Step 2 — clean AFTER extraction, strip both formats including truncated blocks
       const cleanedText = fullText
         .replace(/TASK_DATA_START[\s\S]*?TASK_DATA_END/g, '')
         .replace(/TASK_DATA_START[\s\S]*/g, '')
+        .replace(/```tasks[\s\S]*?```/g, '')
+        .replace(/```tasks[\s\S]*/g, '')
         .trim();
 
       return res.status(200).json({
