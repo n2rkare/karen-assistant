@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 // ── Token registry ────────────────────────────────────────────────────────────
 const VALID_TOKENS = {
@@ -47,7 +47,7 @@ async function loadTasks(token) {
 function getLs(token, key, def) { try { const v = localStorage.getItem(`karen-${key}-${token}`); if (v) return JSON.parse(v); } catch (_) {} return def; }
 function setLs(token, key, val) { try { localStorage.setItem(`karen-${key}-${token}`, JSON.stringify(val)); } catch (_) {} }
 
-const defaultSettings = { darkMode: true, defaultDueTime: "10:00", defaultCategory: "Operations", quietMode: false, quietUntil: null, pinEnabled: false, pin: null, pinPattern: null, pinType: "pin", endOfDayTime: "18:00", endOfDayEnabled: false, voiceEnabled: true, selectedVoice: null, deadlineReminderMin: 30 };
+const defaultSettings = { darkMode: true, defaultDueTime: "10:00", defaultCategory: "Operations", quietMode: false, quietUntil: null, pinEnabled: false, pin: null, endOfDayTime: "18:00", endOfDayEnabled: false, voiceEnabled: true, selectedVoice: null, deadlineReminderMin: 30 };
 
 // ── Time helpers ──────────────────────────────────────────────────────────────
 function getUrgencyColor(task) {
@@ -83,53 +83,71 @@ function detectFamily(title) {
 }
 function getTimeOfDay() { const h = new Date().getHours(); return h < 12 ? "morning" : h < 17 ? "afternoon" : "evening"; }
 
+// ── Voice helper ──────────────────────────────────────────────────────────────
+function speak(text, voiceName, quietMode) {
+  if (quietMode || !window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(text);
+  const voices = window.speechSynthesis.getVoices();
+  if (voiceName) { const v = voices.find(v => v.name === voiceName); if (v) utt.voice = v; }
+  else { const female = voices.find(v => /female|woman|girl|zira|susan|karen|samantha|victoria|allison|ava|nova/i.test(v.name)); if (female) utt.voice = female; }
+  utt.rate = 0.95; utt.pitch = 1.0;
+  window.speechSynthesis.speak(utt);
+}
+
+function startVoiceInput(onResult, onEnd) {
+  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+    alert("Voice input requires Chrome or a Chromium-based browser.");
+    return null;
+  }
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const r = new SR(); r.continuous = false; r.interimResults = false; r.lang = "en-US";
+  r.onresult = e => { onResult(e.results[0][0].transcript); };
+  r.onerror = () => onEnd();
+  r.onend = () => onEnd();
+  r.start();
+  return r;
+}
+
 // ── System prompt ─────────────────────────────────────────────────────────────
 function buildPrompt(taskContext, settings, templates, vendorContacts, userProfile) {
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
   const time = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   const profileStr = userProfile ? `\nDIRECTOR PROFILE:\n${JSON.stringify(userProfile, null, 2)}` : "";
   const vendorStr = vendorContacts?.length ? `\nSAVED CONTACTS:\n${vendorContacts.map(v => `${v.name}: ${v.phone}`).join("\n")}` : "";
-
-  return `You are Kare-N — a sharp, no-fluff AI executive assistant built specifically for independent funeral directors. Today is ${today}, ${time}.
+  return `You are Kare-N — a sharp, no-fluff AI executive assistant for independent funeral directors. Today is ${today}, ${time}.
 ${profileStr}${vendorStr}
 
 FUNERAL INDUSTRY VOCABULARY — use naturally:
-- NOK = Next of Kin | Decedent = person who died | Informant = DC info provider
-- ME/Medical Examiner | Coroner | Officiant | FD = funeral director
-- DC = death certificate | BPT = burial permit/burial transit permit
-- Cremation authorization | ME release | GPL = General Price List
-- First call = initial death notification, triggers case | Arrangement = initial family meeting
-- DI = Direct cremation/burial | Full service | Graveside only | Celebration of life
-- Visitation/Viewing | Wake | Private family | Committal
-- Transfer/Removal = moving decedent | Prep = embalming + dressing + cosmetizing + casketing
-- Casketing | BPT required before transport | Final disposition
-- At-need = active case | Pre-need = pre-planned | Cash advance
-- Cremated remains (not ashes) | Cremains | ID tag | Inurnment | Scattering
-- Ink/Prints = fingerprint collection for jewelry
-- Arrangement conference = initial family planning meeting
+NOK=Next of Kin | Decedent=person who died | Informant=DC info provider | ME/Medical Examiner | Coroner | Officiant | FD=funeral director
+DC=death certificate | BPT=burial permit/burial transit permit | Cremation authorization | ME release | GPL=General Price List
+First call=initial death notification triggers case | Arrangement=initial family meeting
+DI=Direct cremation/burial | Full service | Graveside only | Celebration of life | Visitation/Viewing | Wake | Private family | Committal
+Transfer/Removal=moving decedent | Prep=embalming+dressing+cosmetizing+casketing | Casketing | BPT required before transport
+At-need=active case | Pre-need=pre-planned | Cash advance | Cremated remains (not ashes) | Cremains | ID tag | Inurnment | Scattering
+Ink/Prints=fingerprint collection for jewelry | Arrangement conference=initial family planning meeting
 
-SHORTHAND RECOGNITION:
-- "First call came in for [name]" → trigger new family intake
-- "ME hold on [name]" → flag case blocked pending ME auth
-- "DC filed for [name]" → mark death certificate group complete
-- "Prep done on [name]" → mark all prep subtasks complete
-- "Arrangement complete — [name]" → log arrangement task complete, trigger debrief
-- "BPT in hand for [name]" → mark burial permit task complete
-- "Ink done on [name]" → mark fingerprint collection complete
-- "Quiet mode X hours" → acknowledge quiet mode activated
+SHORTHAND:
+"First call came in for [name]" → new family intake
+"ME hold on [name]" → flag case blocked
+"DC filed for [name]" → mark DC group complete
+"Prep done on [name]" → mark all prep subtasks complete
+"Arrangement complete — [name]" → log complete, trigger debrief
+"BPT in hand for [name]" → mark burial permit complete
+"Ink done on [name]" → mark fingerprint complete
+"Quiet mode X hours" → acknowledge quiet mode
 
 BEHAVIOR:
 - Capture tasks immediately. Default due time: ${settings.defaultDueTime}.
 - Be direct, brief, no flattery. On first message give daily briefing.
-- When user gives family name + service type, spin up workflow template.
-- Auto-assign tasks to correct family case when family name detected.
+- When user gives family name + service type, spin up workflow.
+- Auto-assign tasks to correct family case when name detected.
 - Available templates: ${templates.map(t => t.name).join(", ")}.
-- When arrangement task is checked complete, immediately ask for debrief conversationally.
+- When arrangement task checked complete, immediately ask for debrief conversationally.
 - Extract contacts, tasks, sensitivities, special requests from debrief naturally.
-- When user mentions a vendor by name, check saved contacts for their number.
-- Support template modifications — when user asks to change a workflow step, update their personal template and confirm it's saved.
+- Support template modifications — update personal template and confirm saved.
 
-When tasks change, output EXACTLY:
+When tasks change output EXACTLY:
 TASK_DATA_START
 {"action":"update","tasks":[FULL_ARRAY]}
 TASK_DATA_END
@@ -143,18 +161,6 @@ ${taskContext}`;
 
 const priColors = { high: "#ef4444", medium: "#f59e0b", low: "#94a3b8" };
 const catColors = { Operations: "#22d3ee", Families: "#a78bfa", Compliance: "#f87171", Admin: "#94a3b8", Marketing: "#34d399", Personal: "#fb923c" };
-
-// ── Text to speech ────────────────────────────────────────────────────────────
-function speak(text, voiceName, quietMode) {
-  if (quietMode || !window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
-  const utt = new SpeechSynthesisUtterance(text);
-  const voices = window.speechSynthesis.getVoices();
-  if (voiceName) { const v = voices.find(v => v.name === voiceName); if (v) utt.voice = v; }
-  else { const female = voices.find(v => /female|woman|girl|zira|susan|karen|samantha|victoria|allison|ava|nova/i.test(v.name)); if (female) utt.voice = female; }
-  utt.rate = 0.95; utt.pitch = 1.0;
-  window.speechSynthesis.speak(utt);
-}
 
 // ── Mascot ────────────────────────────────────────────────────────────────────
 function KarenMascot({ size = 48, animated = false }) {
@@ -241,30 +247,22 @@ function AdminPanel() {
   );
 }
 
-// ── PIN Lock Screen ───────────────────────────────────────────────────────────
+// ── PIN Lock ──────────────────────────────────────────────────────────────────
 function PinLock({ settings, onUnlock }) {
   const [entered, setEntered] = useState("");
   const [error, setError] = useState(false);
-  function check(val) {
-    if (val === settings.pin) { onUnlock(); }
-    else { setError(true); setEntered(""); setTimeout(() => setError(false), 1000); }
-  }
+  function check(val) { if (val === settings.pin) { onUnlock(); } else { setError(true); setEntered(""); setTimeout(() => setError(false), 1000); } }
   function tap(d) { const n = entered + d; setEntered(n); if (n.length === 4) check(n); }
   return (
     <div style={{ minHeight: "100dvh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg,#0f172a,#1a1035,#0f172a)", fontFamily: "'Nunito',sans-serif", gap: "32px" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap');@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}`}</style>
       <KarenMascot size={60} animated />
       <div style={{ fontSize: "16px", fontWeight: 700, color: "#94a3b8" }}>Enter PIN</div>
-      <div style={{ display: "flex", gap: "16px" }}>
-        {[0, 1, 2, 3].map(i => <div key={i} style={{ width: "16px", height: "16px", borderRadius: "50%", background: i < entered.length ? (error ? "#ef4444" : "#a78bfa") : "rgba(255,255,255,0.1)", transition: "all .2s" }} />)}
-      </div>
+      <div style={{ display: "flex", gap: "16px" }}>{[0, 1, 2, 3].map(i => <div key={i} style={{ width: "16px", height: "16px", borderRadius: "50%", background: i < entered.length ? (error ? "#ef4444" : "#a78bfa") : "rgba(255,255,255,0.1)", transition: "all .2s" }} />)}</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px" }}>
         {[1, 2, 3, 4, 5, 6, 7, 8, 9, "", 0, "⌫"].map((d, i) => (
-          <button key={i} onClick={() => { if (d === "⌫") setEntered(p => p.slice(0, -1)); else if (d !== "") tap(String(d)); }}
-            disabled={d === ""}
-            style={{ width: "72px", height: "72px", borderRadius: "50%", background: d === "" ? "transparent" : "rgba(255,255,255,0.06)", border: d === "" ? "none" : "1px solid rgba(167,139,250,0.15)", color: "#e2e8f0", fontSize: d === "⌫" ? "18px" : "22px", fontWeight: 600, cursor: d === "" ? "default" : "pointer", fontFamily: "inherit", transition: "all .15s" }}>
-            {d}
-          </button>
+          <button key={i} onClick={() => { if (d === "⌫") setEntered(p => p.slice(0, -1)); else if (d !== "") tap(String(d)); }} disabled={d === ""}
+            style={{ width: "72px", height: "72px", borderRadius: "50%", background: d === "" ? "transparent" : "rgba(255,255,255,0.06)", border: d === "" ? "none" : "1px solid rgba(167,139,250,0.15)", color: "#e2e8f0", fontSize: d === "⌫" ? "18px" : "22px", fontWeight: 600, cursor: d === "" ? "default" : "pointer", fontFamily: "inherit" }}>{d}</button>
         ))}
       </div>
     </div>
@@ -273,28 +271,38 @@ function PinLock({ settings, onUnlock }) {
 
 // ── Onboarding ────────────────────────────────────────────────────────────────
 function Onboarding({ token, onComplete }) {
-  const [messages, setMessages] = useState([{ role: "assistant", content: `Hey! I'm Kare-N. Before we get started, I want to make sure I'm set up for how you actually work. Just a few quick questions.\n\nFirst — what state are you licensed in?` }]);
+  const [messages, setMessages] = useState([{ role: "assistant", content: `Hey! I'm Kare-N. Before we get started, I want to make sure I'm set up for how you actually work. Just a few quick questions — you can type or speak your answers.\n\nFirst — what state are you licensed in?` }]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [profile, setProfile] = useState({});
+  const [listening, setListening] = useState(false);
   const chatEndRef = useRef(null);
   const inputRef = useRef(null);
+  const recognitionRef = useRef(null);
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  const ONBOARDING_PROMPT = `You are Kare-N setting up a new funeral director's profile. Ask these questions ONE AT A TIME in a warm, conversational way. After each answer, acknowledge it naturally before asking the next.
+  function toggleVoice() {
+    if (listening) { recognitionRef.current?.stop(); setListening(false); return; }
+    const r = startVoiceInput(
+      transcript => { setInput(p => p ? p + " " + transcript : transcript); setListening(false); },
+      () => setListening(false)
+    );
+    if (r) { recognitionRef.current = r; setListening(true); }
+  }
 
-Questions to ask (in order):
+  const ONBOARDING_PROMPT = `You are Kare-N setting up a new funeral director's profile. Ask questions ONE AT A TIME in a warm, conversational way. After each answer acknowledge it naturally before asking the next.
+
+Questions to ask in order:
 1. What state are they licensed in? (If NC, note they use NC DAVE for death certificates)
 2. Service mix — mostly cremation, mostly burial, or a mix?
 3. If cremation/mixed: what crematory do they use primarily?
 4. If burial/mixed: what casket supplier? What vault supplier?
 5. Do they handle their own transfers or use a removal service?
 6. In-house memorial products (urns, jewelry) or outsource?
-7. Do they handle their own obituaries or does someone else?
+7. Do they handle their own obituaries?
 8. What family portal or CRM do they use? (Gather, Passare, etc.)
 9. Solo operator or part of a firm?
-10. Do they want to use a separate number for family calls? (Mention Google Voice as an option)
+10. Do they want a separate number for family calls? (Mention Google Voice)
 
 When you have enough information (after ~7-8 exchanges), say EXACTLY:
 ONBOARDING_COMPLETE
@@ -322,7 +330,15 @@ Then tell them their personal workflow is ready and invite them to create their 
       if (match) {
         try {
           const p = JSON.parse(match[1].trim());
+          // Save to Blob so it persists across ALL devices
+          await fetch("/api/chat", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token, type: "onboarding", profile: p }),
+          });
+          // Also save locally as fallback
           setLs(token, "profile", p);
+          localStorage.setItem(`karen-onboarded-${token}`, "true");
           onComplete(p);
           return;
         } catch (_) {}
@@ -340,7 +356,7 @@ Then tell them their personal workflow is ready and invite them to create their 
         <KarenMascot size={44} animated />
         <div>
           <div style={{ fontSize: "20px", fontWeight: 800, background: "linear-gradient(90deg,#22d3ee,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Welcome to Kare-N</div>
-          <div style={{ fontSize: "11px", color: "#64748b" }}>Let's get you set up</div>
+          <div style={{ fontSize: "11px", color: "#64748b" }}>Let's get you set up — type or speak your answers</div>
         </div>
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
@@ -354,8 +370,12 @@ Then tell them their personal workflow is ready and invite them to create their 
         <div ref={chatEndRef} />
       </div>
       <div style={{ padding: "10px 12px", borderTop: "1px solid rgba(167,139,250,0.1)", background: "rgba(15,23,42,0.9)", display: "flex", gap: "8px", alignItems: "flex-end" }}>
-        <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder="Type your answer..." rows={2}
-          style={{ flex: 1, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "14px", color: "#e2e8f0", padding: "10px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", lineHeight: "1.5" }} />
+        <div style={{ flex: 1, position: "relative" }}>
+          <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+            placeholder={listening ? "Listening..." : "Type or speak your answer..."}
+            rows={2} style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: `1px solid ${listening ? "#a78bfa" : "rgba(167,139,250,0.2)"}`, borderRadius: "14px", color: "#e2e8f0", padding: "10px 44px 10px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", lineHeight: "1.5" }} />
+          <button onClick={toggleVoice} style={{ position: "absolute", right: "10px", bottom: "10px", width: "26px", height: "26px", borderRadius: "50%", background: listening ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(167,139,250,0.2)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "13px" }}>{listening ? "⏹" : "🎙"}</button>
+        </div>
         <button onClick={send} disabled={loading || !input.trim()} style={{ width: "40px", height: "40px", borderRadius: "14px", background: loading || !input.trim() ? "rgba(255,255,255,0.05)" : "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", cursor: loading || !input.trim() ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "15px", flexShrink: 0 }}>{loading ? "⏳" : "✈️"}</button>
       </div>
     </div>
@@ -391,21 +411,19 @@ function KarenMain({ token }) {
   const [feedback, setFeedback] = useState(""); const [feedbackSent, setFeedbackSent] = useState(false);
   const [availableVoices, setAvailableVoices] = useState([]);
   const [pendingDebrief, setPendingDebrief] = useState(null);
-  const [quietModeHours, setQuietModeHours] = useState(2);
   const [showQuietMode, setShowQuietMode] = useState(false);
   const [newVendorName, setNewVendorName] = useState(""); const [newVendorPhone, setNewVendorPhone] = useState("");
+  const [expandedGroups, setExpandedGroups] = useState({});
   const chatEndRef = useRef(null);
   const inputRef = useRef(null);
   const recognitionRef = useRef(null);
   const startXRef = useRef(null);
   const fileInputRef = useRef(null);
-  const longPressRef = useRef(null);
   const darkMode = settings.darkMode;
   const quietMode = settings.quietMode && settings.quietUntil && new Date(settings.quietUntil) > new Date();
 
   function updateSettings(updates) { const s = { ...settings, ...updates }; setSettingsState(s); setLs(token, "settings", s); }
 
-  // Load voices
   useEffect(() => {
     function loadVoices() { setAvailableVoices(window.speechSynthesis?.getVoices() || []); }
     loadVoices();
@@ -413,26 +431,20 @@ function KarenMain({ token }) {
     return () => window.speechSynthesis?.removeEventListener("voiceschanged", loadVoices);
   }, []);
 
-  // Load tasks
   useEffect(() => {
     loadTasks(token).then(loaded => { setTasksState(loaded.map(n)); setTasksLoaded(true); });
   }, [token]);
 
-  function n(t) { return { ...t, dueDate: t.dueDate ? applyDefaultTime(t.dueDate, settings.defaultDueTime) : null, subtasks: t.subtasks || [], familyName: t.familyName || detectFamily(t.title), caseId: t.caseId || (t.familyName ? t.familyName.toLowerCase() : null) || (detectFamily(t.title) ? detectFamily(t.title).toLowerCase() : null), folder: t.folder || null, group: t.group || null, lastActivity: t.lastActivity || t.completedAt || t.createdAt }; }
+  function n(t) { return { ...t, dueDate: t.dueDate ? applyDefaultTime(t.dueDate, settings.defaultDueTime) : null, subtasks: t.subtasks || [], familyName: t.familyName || detectFamily(t.title), caseId: t.caseId || (detectFamily(t.title) ? detectFamily(t.title).toLowerCase() : null), folder: t.folder || null, group: t.group || null, lastActivity: t.lastActivity || t.completedAt || t.createdAt }; }
 
-  // Daily briefing
   useEffect(() => {
     if (!tasksLoaded) return;
     const today = new Date().toDateString();
     const last = localStorage.getItem(`karen-briefing-${token}`);
     const overdue = tasks.filter(t => t.status === "pending" && isOverdue(t));
     const urgent = tasks.filter(t => t.status === "pending" && isUrgent(t));
-    const pending = tasks.filter(t => t.status === "pending");
-
-    // Check for pending debrief
     const debriefNeeded = tasks.find(t => t.isArrangementTask && t.status === "done" && !t.debriefDone);
     if (debriefNeeded) setPendingDebrief(debriefNeeded);
-
     if (last === today) { setMessages([{ role: "assistant", content: `Hey ${memberName}. What's on your plate?` }]); return; }
     localStorage.setItem(`karen-briefing-${token}`, today);
     if (tasks.length === 0) { setMessages([{ role: "assistant", content: `Good ${getTimeOfDay()} ${memberName}. No tasks yet.\n\nTap "New Family Case" to start a case, or tell me what you need to do.` }]); return; }
@@ -442,7 +454,7 @@ function KarenMain({ token }) {
     if (debriefNeeded) b += `📋 Ready to debrief the ${debriefNeeded.familyName || ""} arrangement when you are.\n\n`;
     const cases = [...new Set(tasks.filter(t => t.caseId && t.status === "pending").map(t => t.familyName))].filter(Boolean);
     if (cases.length > 0) b += `📁 Active cases: ${cases.join(", ")}\n\n`;
-    b += `${pending.length} total pending.`;
+    b += `${tasks.filter(t => t.status === "pending").length} total pending.`;
     setMessages([{ role: "assistant", content: b }]);
   }, [tasksLoaded]);
 
@@ -479,27 +491,21 @@ function KarenMain({ token }) {
   }
 
   function toggleVoice() {
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) { alert("Voice input requires Chrome."); return; }
     if (listening) { recognitionRef.current?.stop(); setListening(false); return; }
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const r = new SR(); r.continuous = false; r.interimResults = false; r.lang = "en-US";
-    r.onresult = e => { setInput(p => p ? p + " " + e.results[0][0].transcript : e.results[0][0].transcript); setListening(false); };
-    r.onerror = () => setListening(false); r.onend = () => setListening(false);
-    recognitionRef.current = r; r.start(); setListening(true);
+    const r = startVoiceInput(
+      transcript => { setInput(p => p ? p + " " + transcript : transcript); setListening(false); },
+      () => setListening(false)
+    );
+    if (r) { recognitionRef.current = r; setListening(true); }
   }
 
   function toggleTask(id) {
     const task = tasks.find(t => t.id === id);
     const newStatus = task?.status === "done" ? "pending" : "done";
-    const updated = tasks.map(t => t.id === id ? { ...t, status: newStatus, completedAt: newStatus === "done" ? new Date().toISOString() : null, lastActivity: new Date().toISOString() } : t);
-    updateTasks(updated);
-    // Trigger debrief if arrangement task just completed
+    updateTasks(tasks.map(t => t.id === id ? { ...t, status: newStatus, completedAt: newStatus === "done" ? new Date().toISOString() : null, lastActivity: new Date().toISOString() } : t));
     if (newStatus === "done" && task?.isArrangementTask && !task?.debriefDone) {
       setPendingDebrief(task);
-      setTimeout(() => {
-        setMessages(prev => [...prev, { role: "assistant", content: `How'd the ${task.familyName || ""} arrangement go? Tell me what I need to know.` }]);
-        setActiveTab(0);
-      }, 500);
+      setTimeout(() => { setMessages(prev => [...prev, { role: "assistant", content: `How'd the ${task.familyName || ""} arrangement go? Tell me what I need to know.` }]); setActiveTab(0); }, 500);
     }
   }
 
@@ -507,8 +513,7 @@ function KarenMain({ token }) {
   function snoozeTask(id, h) { updateTasks(tasks.map(t => t.id === id ? { ...t, dueDate: snoozeDate(h), status: "pending", lastActivity: new Date().toISOString() } : t)); }
   function toggleSubtask(tid, sid) { updateTasks(tasks.map(t => t.id === tid ? { ...t, subtasks: t.subtasks.map(s => s.id === sid ? { ...s, done: !s.done } : s), lastActivity: new Date().toISOString() } : t)); }
   function closeCase(caseId) { if (!window.confirm(`Move all ${caseId} family tasks to History?`)) return; updateTasks(tasks.map(t => t.caseId === caseId ? { ...t, status: "done", completedAt: t.completedAt || new Date().toISOString(), lastActivity: new Date().toISOString() } : t)); setOpenCase(null); }
-  function deleteCase(caseId) { if (!window.confirm(`Delete all tasks for the ${caseId} family? This cannot be undone.`)) return; updateTasks(tasks.filter(t => t.caseId !== caseId)); setOpenCase(null); }
-
+  function deleteCase(caseId) { if (!window.confirm(`Delete all tasks for the ${caseId} family? Cannot be undone.`)) return; updateTasks(tasks.filter(t => t.caseId !== caseId)); setOpenCase(null); }
   function startEdit(task) { setEditingTask(task.id); setEditValues({ title: task.title, notes: task.notes || "", priority: task.priority, category: task.category, dueDate: task.dueDate ? new Date(task.dueDate).toISOString().slice(0, 16) : "", phone: task.phone || "" }); }
   function saveEdit(id) { updateTasks(tasks.map(t => t.id === id ? { ...t, ...editValues, dueDate: editValues.dueDate ? new Date(editValues.dueDate).toISOString() : null, lastActivity: new Date().toISOString() } : t)); setEditingTask(null); }
 
@@ -518,77 +523,39 @@ function KarenMain({ token }) {
     const tmpl = templates.find(t => t.id === tid) || templates[0];
     const caseId = name.split(" ").pop().toLowerCase();
     const familyName = name.split(" ").pop();
-    const newTasks = [];
-    let idC = Date.now();
-    tmpl.groups.forEach(g => g.tasks.forEach(taskTitle => {
-      const isArrangement = g.name === "Arrangement" || taskTitle.toLowerCase().includes("arrangement");
-      newTasks.push({ id: String(idC++), title: `${name} — ${taskTitle}`, notes: "", priority: ["Death Certificate", "Crematory", "Prep"].includes(g.name) ? "high" : "medium", status: "pending", category: "Families", createdAt: new Date().toISOString(), dueDate: null, completedAt: null, recurring: null, subtasks: [], familyName, caseId, folder: null, group: g.name, lastActivity: new Date().toISOString(), phone: null, isArrangementTask: isArrangement, debriefDone: false });
-    }));
-    // Add arrangement conference task
-    newTasks.unshift({ id: String(idC++), title: `${name} — Arrangement Conference`, notes: "", priority: "high", status: "pending", category: "Families", createdAt: new Date().toISOString(), dueDate: null, completedAt: null, recurring: null, subtasks: [], familyName, caseId, folder: null, group: "Arrangement", lastActivity: new Date().toISOString(), phone: null, isArrangementTask: true, debriefDone: false });
+    const newTasks = [{ id: String(Date.now()), title: `${name} — Arrangement Conference`, notes: "", priority: "high", status: "pending", category: "Families", createdAt: new Date().toISOString(), dueDate: null, completedAt: null, recurring: null, subtasks: [], familyName, caseId, folder: null, group: "Arrangement", lastActivity: new Date().toISOString(), phone: null, isArrangementTask: true, debriefDone: false }];
+    let idC = Date.now() + 1;
+    tmpl.groups.forEach(g => g.tasks.forEach(taskTitle => { newTasks.push({ id: String(idC++), title: `${name} — ${taskTitle}`, notes: "", priority: ["Death Certificate", "Crematory", "Prep"].includes(g.name) ? "high" : "medium", status: "pending", category: "Families", createdAt: new Date().toISOString(), dueDate: null, completedAt: null, recurring: null, subtasks: [], familyName, caseId, folder: null, group: g.name, lastActivity: new Date().toISOString(), phone: null, isArrangementTask: false, debriefDone: false }); }));
     updateTasks([...tasks, ...newTasks]);
-    setMessages(prev => [...prev, { role: "user", content: `New family: ${name}${dob ? `, DOB ${dob}` : ""}${dod ? `, DOD ${dod}` : ""}${sex ? `, ${sex}` : ""}` }, { role: "assistant", content: `${tmpl.name} workflow created for the ${familyName} family — ${newTasks.length} tasks across ${tmpl.groups.length + 1} groups.\n\nTap the ${familyName} case folder in Tasks to see them. When you complete the arrangement conference, I'll ask for a debrief.` }]);
-    setShowFamilyIntake(false);
-    setFamilyIntake({ name: "", dob: "", dod: "", sex: "", template: "cremation" });
-    setActiveTab(1);
+    setMessages(prev => [...prev, { role: "user", content: `New family: ${name}${dob ? `, DOB ${dob}` : ""}${dod ? `, DOD ${dod}` : ""}${sex ? `, ${sex}` : ""}` }, { role: "assistant", content: `${tmpl.name} workflow created for the ${familyName} family — ${newTasks.length} tasks. Tap the ${familyName} case folder in Tasks to see them.` }]);
+    setShowFamilyIntake(false); setFamilyIntake({ name: "", dob: "", dod: "", sex: "", template: "cremation" }); setActiveTab(1);
   }
 
-  function activateQuietMode(hours) {
-    const until = new Date(); until.setHours(until.getHours() + hours);
-    updateSettings({ quietMode: true, quietUntil: until.toISOString() });
-    setShowQuietMode(false);
-    setMessages(prev => [...prev, { role: "assistant", content: `🔕 Quiet mode on for ${hours} hour${hours !== 1 ? "s" : ""}. I won't make any noise until ${until.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}.` }]);
-  }
-
-  function sendFeedback() {
-    if (!feedback.trim()) return;
-    const log = getLs(token, "feedback", []);
-    log.push({ id: String(Date.now()), text: feedback, createdAt: new Date().toISOString() });
-    setLs(token, "feedback", log);
-    setFeedbackSent(true); setFeedback("");
-    setTimeout(() => setFeedbackSent(false), 2000);
-  }
-
-  function handleDocUpload(e) {
-    const file = e.target.files[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => { const nd = { id: String(Date.now()), name: file.name, type: file.type, data: ev.target.result, uploadedAt: new Date().toISOString() }; const u = [...documents, nd]; setDocuments(u); setLs(token, "docs", u); };
-    reader.readAsDataURL(file);
-  }
+  function activateQuietMode(hours) { const until = new Date(); until.setHours(until.getHours() + hours); updateSettings({ quietMode: true, quietUntil: until.toISOString() }); setShowQuietMode(false); }
+  function sendFeedback() { if (!feedback.trim()) return; const log = getLs(token, "feedback", []); log.push({ id: String(Date.now()), text: feedback, createdAt: new Date().toISOString() }); setLs(token, "feedback", log); setFeedbackSent(true); setFeedback(""); setTimeout(() => setFeedbackSent(false), 2000); }
+  function handleDocUpload(e) { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = ev => { const nd = { id: String(Date.now()), name: file.name, type: file.type, data: ev.target.result, uploadedAt: new Date().toISOString() }; const u = [...documents, nd]; setDocuments(u); setLs(token, "docs", u); }; reader.readAsDataURL(file); }
 
   function handleTouchStart(e) { startXRef.current = e.touches[0].clientX; }
-  function handleTouchEnd(e) {
-    if (startXRef.current === null) return;
-    const diff = startXRef.current - e.changedTouches[0].clientX;
-    if (Math.abs(diff) > 120) { if (diff > 0) setActiveTab(t => Math.min(t + 1, 2)); else setActiveTab(t => Math.max(t - 1, 0)); }
-    startXRef.current = null;
-  }
+  function handleTouchEnd(e) { if (startXRef.current === null) return; const diff = startXRef.current - e.changedTouches[0].clientX; if (Math.abs(diff) > 120) { if (diff > 0) setActiveTab(t => Math.min(t + 1, 2)); else setActiveTab(t => Math.max(t - 1, 0)); } startXRef.current = null; }
 
-  // ── Computed ──────────────────────────────────────────────────────────────
   const pending = tasks.filter(t => t.status === "pending");
   const done = tasks.filter(t => t.status === "done");
   const overdue = pending.filter(isOverdue);
-  const urgentTasks = pending.filter(t => isUrgent(t) && !t.caseId);
-  const urgentCaseTasks = pending.filter(t => isUrgent(t) && t.caseId);
-
+  const urgentAll = pending.filter(isUrgent);
+  const urgentGeneral = urgentAll.filter(t => !t.caseId);
+  const urgentCase = urgentAll.filter(t => t.caseId);
   const caseMap = {};
-  tasks.filter(t => t.caseId && t.status !== "closed").forEach(t => {
-    if (!caseMap[t.caseId]) caseMap[t.caseId] = { caseId: t.caseId, familyName: t.familyName, tasks: [], lastActivity: t.lastActivity || t.createdAt };
-    caseMap[t.caseId].tasks.push(t);
-    if ((t.lastActivity || t.createdAt) > caseMap[t.caseId].lastActivity) caseMap[t.caseId].lastActivity = t.lastActivity || t.createdAt;
-  });
+  tasks.filter(t => t.caseId).forEach(t => { if (!caseMap[t.caseId]) caseMap[t.caseId] = { caseId: t.caseId, familyName: t.familyName, tasks: [], lastActivity: t.lastActivity || t.createdAt }; caseMap[t.caseId].tasks.push(t); if ((t.lastActivity || t.createdAt) > caseMap[t.caseId].lastActivity) caseMap[t.caseId].lastActivity = t.lastActivity || t.createdAt; });
   const cases = Object.values(caseMap).sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
-  const generalTasks = tasks.filter(t => !t.caseId && t.status === "pending");
+  const generalTasks = tasks.filter(t => !t.caseId && t.status === "pending" && !isUrgent(t));
   const doneTasks = tasks.filter(t => t.status === "done");
   const familyFolders = [...new Set(doneTasks.map(t => t.familyName || t.folder).filter(Boolean))];
   const historyFiltered = historyFolder === "all" ? doneTasks : historyFolder === "unfiled" ? doneTasks.filter(t => !t.familyName && !t.folder) : doneTasks.filter(t => t.familyName === historyFolder || t.folder === historyFolder);
   const openCaseData = openCase ? caseMap[openCase] : null;
   const openCaseTasks = openCaseData ? openCaseData.tasks : [];
-  const openCaseGroups = openCaseData ? [...new Set(openCaseTasks.map(t => t.group || "General"))].map(g => ({ name: g, tasks: openCaseTasks.filter(t => (t.group || "General") === g) })) : [];
-  const openCaseNotes = openCaseData ? getLs(token, `case-notes-${openCase}`, "") : "";
+  const openCaseGroups = [...new Set(openCaseTasks.map(t => t.group || "General"))].map(g => ({ name: g, tasks: openCaseTasks.filter(t => (t.group || "General") === g) }));
   const monthlyCount = tasks.filter(t => { if (t.status !== "done" || !t.completedAt) return false; const d = new Date(t.completedAt); return d.getMonth() === new Date().getMonth() && d.getFullYear() === new Date().getFullYear(); }).length;
 
-  // Theme
   const bg = darkMode ? "linear-gradient(135deg,#0f172a,#1a1035,#0f172a)" : "linear-gradient(135deg,#f0f9ff,#f5f0ff,#f0f9ff)";
   const tc = darkMode ? "#e2e8f0" : "#1e293b";
   const mc = darkMode ? "#64748b" : "#94a3b8";
@@ -597,10 +564,7 @@ function KarenMain({ token }) {
   const ibg = darkMode ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.9)";
   const is = { background: ibg, border: `1px solid ${brd}`, borderRadius: "10px", color: tc, padding: "8px 12px", fontSize: "13px", fontFamily: "inherit", outline: "none" };
 
-  // Task card
   function TaskCard({ task }) {
-    const [groupExpanded, setGroupExpanded] = useState({});
-    const urgent = isUrgent(task);
     if (editingTask === task.id) return (
       <div style={{ background: cb, border: `1px solid ${brd}`, borderLeft: `4px solid ${getUrgencyColor(task)}`, borderRadius: "14px", padding: "12px" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
@@ -619,6 +583,7 @@ function KarenMain({ token }) {
         </div>
       </div>
     );
+    const urgent = isUrgent(task);
     return (
       <div style={{ background: cb, border: `1px solid ${isOverdue(task) ? "rgba(239,68,68,0.2)" : brd}`, borderLeft: `4px solid ${getUrgencyColor(task)}`, borderRadius: "14px", padding: "11px 12px", opacity: task.status === "done" ? 0.45 : 1 }}>
         <div style={{ display: "flex", gap: "9px", alignItems: "flex-start" }}>
@@ -645,7 +610,7 @@ function KarenMain({ token }) {
                   </>}
                   <button onClick={() => deleteTask(task.id)} style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "6px", color: "#ef4444", padding: "2px 7px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", fontWeight: 700 }}>🗑</button>
                 </div>
-                <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: "4px" }}>
                   <span style={{ fontSize: "9px", fontWeight: 700, textTransform: "uppercase", color: catColors[task.category] || mc, background: `${catColors[task.category] || mc}18`, border: `1px solid ${catColors[task.category] || mc}33`, padding: "1px 6px", borderRadius: "20px" }}>{task.category}</span>
                   <span style={{ fontSize: "9px", fontWeight: 600, color: priColors[task.priority], textTransform: "uppercase" }}>{task.priority}</span>
                 </div>
@@ -683,13 +648,7 @@ function KarenMain({ token }) {
         .group-row:hover{background:rgba(167,139,250,0.05)!important}
       `}</style>
 
-      {/* Quiet mode banner */}
-      {quietMode && (
-        <div style={{ background: "rgba(99,102,241,0.15)", borderBottom: "1px solid rgba(99,102,241,0.3)", padding: "6px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
-          <span style={{ fontSize: "11px", color: "#a5b4fc", fontWeight: 600 }}>🔕 Quiet mode until {fmtTime(settings.quietUntil)}</span>
-          <button onClick={() => updateSettings({ quietMode: false, quietUntil: null })} style={{ background: "none", border: "none", color: "#a5b4fc", cursor: "pointer", fontSize: "11px", fontWeight: 700 }}>End</button>
-        </div>
-      )}
+      {quietMode && <div style={{ background: "rgba(99,102,241,0.15)", borderBottom: "1px solid rgba(99,102,241,0.3)", padding: "6px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}><span style={{ fontSize: "11px", color: "#a5b4fc", fontWeight: 600 }}>🔕 Quiet mode until {fmtTime(settings.quietUntil)}</span><button onClick={() => updateSettings({ quietMode: false, quietUntil: null })} style={{ background: "none", border: "none", color: "#a5b4fc", cursor: "pointer", fontSize: "11px", fontWeight: 700 }}>End</button></div>}
 
       {/* Header */}
       <div style={{ padding: "10px 14px", display: "flex", alignItems: "center", gap: "10px", background: darkMode ? "rgba(255,255,255,0.03)" : "rgba(255,255,255,0.7)", borderBottom: `1px solid ${brd}`, backdropFilter: "blur(10px)", zIndex: 10, flexShrink: 0 }}>
@@ -701,7 +660,7 @@ function KarenMain({ token }) {
         <div style={{ display: "flex", gap: "5px", alignItems: "center" }}>
           {overdue.length > 0 && <div className="stb" onClick={() => { setActiveTab(1); setOpenCase(null); }} style={{ background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "8px", padding: "3px 8px", textAlign: "center" }}><div style={{ color: "#ef4444", fontWeight: 700, fontSize: "12px" }}>{overdue.length}</div><div style={{ color: "#ef4444", opacity: 0.7, fontSize: "9px" }}>overdue</div></div>}
           <div className="stb" onClick={() => { setActiveTab(1); setOpenCase(null); }} style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "8px", padding: "3px 8px", textAlign: "center" }}><div style={{ color: "#a78bfa", fontWeight: 700, fontSize: "12px" }}>{pending.length}</div><div style={{ color: "#a78bfa", opacity: 0.7, fontSize: "9px" }}>pending</div></div>
-          <button className="ib" onClick={() => setShowQuietMode(true)} title="Quiet mode" style={{ fontSize: "16px" }}>{quietMode ? "🔕" : "🔔"}</button>
+          <button className="ib" onClick={() => setShowQuietMode(true)} style={{ fontSize: "16px" }}>{quietMode ? "🔕" : "🔔"}</button>
           <button className="ib" onClick={() => setShowSettings(true)} style={{ fontSize: "17px" }}>⚙️</button>
         </div>
       </div>
@@ -719,22 +678,20 @@ function KarenMain({ token }) {
       </div>
       <div style={{ height: "14px", flexShrink: 0 }} />
 
-      {/* ── CHAT ── */}
+      {/* CHAT */}
       {activeTab === 0 && (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
           <div style={{ padding: "0 14px 8px", flexShrink: 0, display: "flex", gap: "8px" }}>
             <button onClick={() => setShowFamilyIntake(true)} style={{ flex: 1, background: "linear-gradient(135deg,#22d3ee22,#a78bfa22)", border: `1px solid ${brd}`, borderRadius: "12px", color: "#a78bfa", padding: "8px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "12px", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" }}>👨‍👩‍👧 New Family Case</button>
-            {pendingDebrief && <button onClick={() => { setMessages(prev => [...prev, { role: "assistant", content: `Ready to debrief the ${pendingDebrief.familyName || ""} arrangement? Tell me what I need to know.` }]); }} style={{ background: "rgba(255,190,11,0.15)", border: "1px solid rgba(255,190,11,0.3)", borderRadius: "12px", color: "#ffbe0b", padding: "8px 12px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "11px", whiteSpace: "nowrap", animation: "pulse 2s infinite" }}>📋 Debrief</button>}
+            {pendingDebrief && <button onClick={() => setMessages(prev => [...prev, { role: "assistant", content: `Ready to debrief the ${pendingDebrief.familyName || ""} arrangement? Tell me what I need to know.` }])} style={{ background: "rgba(255,190,11,0.15)", border: "1px solid rgba(255,190,11,0.3)", borderRadius: "12px", color: "#ffbe0b", padding: "8px 12px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "11px", whiteSpace: "nowrap", animation: "pulse 2s infinite" }}>📋 Debrief</button>}
           </div>
           <div style={{ flex: 1, overflowY: "auto", padding: "4px 14px 12px", display: "flex", flexDirection: "column", gap: "10px" }}>
             {messages.map((m, i) => (
               <div key={i} className="mb" style={{ display: "flex", flexDirection: m.role === "user" ? "row-reverse" : "row", gap: "8px", alignItems: "flex-end" }}>
                 {m.role === "assistant" && <div style={{ flexShrink: 0, marginBottom: "2px" }}><KarenMascot size={26} /></div>}
-                <div style={{ maxWidth: "80%", padding: "10px 14px", borderRadius: m.role === "user" ? "18px 18px 4px 18px" : "4px 18px 18px 18px", background: m.role === "user" ? (darkMode ? "linear-gradient(135deg,#1e3a5f,#1a1045)" : "linear-gradient(135deg,#dbeafe,#ede9fe)") : cb, border: `1px solid ${m.role === "user" ? "rgba(34,211,238,0.2)" : brd}`, fontSize: "13px", lineHeight: "1.6", color: m.role === "user" ? (darkMode ? "#bae6fd" : "#1e3a5f") : tc, whiteSpace: "pre-wrap", position: "relative" }}>
+                <div style={{ maxWidth: "80%", padding: "10px 14px", borderRadius: m.role === "user" ? "18px 18px 4px 18px" : "4px 18px 18px 18px", background: m.role === "user" ? (darkMode ? "linear-gradient(135deg,#1e3a5f,#1a1045)" : "linear-gradient(135deg,#dbeafe,#ede9fe)") : cb, border: `1px solid ${m.role === "user" ? "rgba(34,211,238,0.2)" : brd}`, fontSize: "13px", lineHeight: "1.6", color: m.role === "user" ? (darkMode ? "#bae6fd" : "#1e3a5f") : tc, whiteSpace: "pre-wrap", position: "relative", paddingBottom: m.role === "assistant" ? "24px" : "10px" }}>
                   {m.content}
-                  {m.role === "assistant" && settings.voiceEnabled && (
-                    <button onClick={() => speak(m.content, settings.selectedVoice, quietMode)} style={{ position: "absolute", bottom: "4px", right: "8px", background: "none", border: "none", color: mc, cursor: "pointer", fontSize: "12px", opacity: 0.6, padding: "2px" }}>🔊</button>
-                  )}
+                  {m.role === "assistant" && settings.voiceEnabled && <button onClick={() => speak(m.content, settings.selectedVoice, quietMode)} style={{ position: "absolute", bottom: "4px", right: "8px", background: "none", border: "none", color: mc, cursor: "pointer", fontSize: "12px", opacity: 0.6, padding: "2px" }}>🔊</button>}
                 </div>
               </div>
             ))}
@@ -752,50 +709,41 @@ function KarenMain({ token }) {
         </div>
       )}
 
-      {/* ── TASKS — main view ── */}
+      {/* TASKS — main */}
       {activeTab === 1 && !openCase && (
         <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
-          {/* Urgent */}
-          {(urgentTasks.length > 0 || urgentCaseTasks.length > 0) && (
+          {(urgentGeneral.length > 0 || urgentCase.length > 0) && (
             <div style={{ marginBottom: "16px" }}>
               <div style={{ fontSize: "10px", fontWeight: 700, color: "#ff006e", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
                 <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#ff006e", animation: "pd 1.5s infinite" }} /> Due Within 24 Hours
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
-                {[...urgentTasks, ...urgentCaseTasks].map(task => <TaskCard key={task.id} task={task} />)}
+                {[...urgentGeneral, ...urgentCase].map(task => <TaskCard key={task.id} task={task} />)}
               </div>
             </div>
           )}
-
-          {/* General tasks */}
-          {generalTasks.filter(t => !isUrgent(t)).length > 0 && (
+          {generalTasks.length > 0 && (
             <div style={{ marginBottom: "16px" }}>
               <div style={{ fontSize: "10px", fontWeight: 700, color: mc, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>General</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
-                {generalTasks.filter(t => !isUrgent(t)).map(task => <TaskCard key={task.id} task={task} />)}
-              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>{generalTasks.map(task => <TaskCard key={task.id} task={task} />)}</div>
             </div>
           )}
-
-          {/* Case folders */}
           {cases.length > 0 && (
             <div style={{ marginBottom: "16px" }}>
               <div style={{ fontSize: "10px", fontWeight: 700, color: mc, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>Family Cases</div>
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                 {cases.map(c => {
-                  const casePending = c.tasks.filter(t => t.status === "pending");
-                  const caseUrgent = casePending.filter(isUrgent);
-                  const caseOverdue = casePending.filter(isOverdue);
+                  const cp = c.tasks.filter(t => t.status === "pending");
+                  const cu = cp.filter(isUrgent); const co = cp.filter(isOverdue);
                   return (
-                    <div key={c.caseId} className="case-folder" onClick={() => setOpenCase(c.caseId)}
-                      style={{ background: cb, border: `1px solid ${brd}`, borderRadius: "14px", padding: "14px 16px", display: "flex", alignItems: "center", gap: "12px" }}>
+                    <div key={c.caseId} className="case-folder" onClick={() => setOpenCase(c.caseId)} style={{ background: cb, border: `1px solid ${brd}`, borderRadius: "14px", padding: "14px 16px", display: "flex", alignItems: "center", gap: "12px" }}>
                       <div style={{ width: "40px", height: "40px", borderRadius: "12px", background: "linear-gradient(135deg,#22d3ee33,#a78bfa33)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "18px", flexShrink: 0 }}>👨‍👩‍👧</div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: "14px", fontWeight: 700, color: tc, marginBottom: "3px" }}>{c.familyName} Family</div>
                         <div style={{ fontSize: "11px", color: mc, display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                          <span>{casePending.length} pending</span>
-                          {caseOverdue.length > 0 && <span style={{ color: "#ef4444", fontWeight: 700 }}>⚠ {caseOverdue.length} overdue</span>}
-                          {caseUrgent.length > 0 && <span style={{ color: "#ff006e", fontWeight: 700 }}>🔴 {caseUrgent.length} urgent</span>}
+                          <span>{cp.length} pending</span>
+                          {co.length > 0 && <span style={{ color: "#ef4444", fontWeight: 700 }}>⚠ {co.length} overdue</span>}
+                          {cu.length > 0 && <span style={{ color: "#ff006e", fontWeight: 700 }}>🔴 {cu.length} urgent</span>}
                         </div>
                       </div>
                       <div style={{ color: mc, fontSize: "16px" }}>›</div>
@@ -805,117 +753,73 @@ function KarenMain({ token }) {
               </div>
             </div>
           )}
-
-          {tasks.filter(t => t.status === "pending").length === 0 && cases.length === 0 && (
-            <div style={{ textAlign: "center", marginTop: "40px" }}><KarenMascot size={50} animated /><div style={{ color: mc, fontSize: "13px", marginTop: "12px" }}>No active tasks or cases.</div></div>
-          )}
+          {tasks.filter(t => t.status === "pending").length === 0 && cases.length === 0 && <div style={{ textAlign: "center", marginTop: "40px" }}><KarenMascot size={50} animated /><div style={{ color: mc, fontSize: "13px", marginTop: "12px" }}>No active tasks or cases.</div></div>}
         </div>
       )}
 
-      {/* ── CASE DETAIL ── */}
+      {/* CASE DETAIL */}
       {activeTab === 1 && openCase && openCaseData && (
         <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
-          {/* Case header */}
           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
             <button onClick={() => setOpenCase(null)} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "8px", color: mc, padding: "6px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", fontWeight: 700 }}>← Back</button>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: "16px", fontWeight: 800, color: tc }}>{openCaseData.familyName} Family</div>
-              <div style={{ fontSize: "11px", color: mc }}>{openCaseTasks.filter(t => t.status === "pending").length} pending · {openCaseTasks.filter(t => t.status === "done").length} done</div>
-            </div>
+            <div style={{ flex: 1 }}><div style={{ fontSize: "16px", fontWeight: 800, color: tc }}>{openCaseData.familyName} Family</div><div style={{ fontSize: "11px", color: mc }}>{openCaseTasks.filter(t => t.status === "pending").length} pending · {openCaseTasks.filter(t => t.status === "done").length} done</div></div>
             <div style={{ display: "flex", gap: "6px" }}>
               <button onClick={() => closeCase(openCase)} style={{ background: "rgba(52,211,153,0.15)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: "8px", color: "#34d399", padding: "6px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 700 }}>✓ Close</button>
-              <button onClick={() => deleteCase(openCase)} style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "8px", color: "#ef4444", padding: "6px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 700 }}>🗑</button>
+              <button onClick={() => deleteCase(openCase)} style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "8px", color: "#ef4444", padding: "6px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 700 }}>🗑 Delete</button>
             </div>
           </div>
-
-          {/* NOK call button if available */}
-          {openCaseTasks.find(t => t.phone) && (
-            <a href={`tel:${openCaseTasks.find(t => t.phone).phone}`} style={{ display: "flex", alignItems: "center", gap: "8px", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: "12px", padding: "10px 14px", marginBottom: "14px", textDecoration: "none" }}>
-              <span style={{ fontSize: "18px" }}>📞</span>
-              <div><div style={{ fontSize: "12px", fontWeight: 700, color: "#34d399" }}>Call NOK</div><div style={{ fontSize: "10px", color: mc }}>{openCaseTasks.find(t => t.phone).phone}</div></div>
-            </a>
-          )}
-
-          {/* Workflow groups — collapsible */}
+          {openCaseTasks.find(t => t.phone) && <a href={`tel:${openCaseTasks.find(t => t.phone).phone}`} style={{ display: "flex", alignItems: "center", gap: "8px", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: "12px", padding: "10px 14px", marginBottom: "14px", textDecoration: "none" }}><span style={{ fontSize: "18px" }}>📞</span><div><div style={{ fontSize: "12px", fontWeight: 700, color: "#34d399" }}>Call NOK</div><div style={{ fontSize: "10px", color: mc }}>{openCaseTasks.find(t => t.phone).phone}</div></div></a>}
           {openCaseGroups.map(group => {
-            const [expanded, setExpanded] = useState(false);
+            const key = `${openCase}-${group.name}`;
+            const expanded = expandedGroups[key] || false;
             const doneCount = group.tasks.filter(t => t.status === "done").length;
             const allDone = doneCount === group.tasks.length;
             return (
               <div key={group.name} style={{ marginBottom: "10px" }}>
-                <div className="group-row" onClick={() => setExpanded(!expanded)}
-                  style={{ display: "flex", alignItems: "center", gap: "10px", background: cb, border: `1px solid ${brd}`, borderRadius: "12px", padding: "12px 14px", cursor: "pointer" }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: "13px", fontWeight: 700, color: allDone ? mc : tc, textDecoration: allDone ? "line-through" : "none" }}>{group.name}</div>
-                    <div style={{ fontSize: "10px", color: mc, marginTop: "2px" }}>{doneCount}/{group.tasks.length} complete</div>
-                  </div>
+                <div className="group-row" onClick={() => setExpandedGroups(prev => ({ ...prev, [key]: !expanded }))}
+                  style={{ display: "flex", alignItems: "center", gap: "10px", background: cb, border: `1px solid ${brd}`, borderRadius: "12px", padding: "12px 14px" }}>
+                  <div style={{ flex: 1 }}><div style={{ fontSize: "13px", fontWeight: 700, color: allDone ? mc : tc, textDecoration: allDone ? "line-through" : "none" }}>{group.name}</div><div style={{ fontSize: "10px", color: mc, marginTop: "2px" }}>{doneCount}/{group.tasks.length} complete</div></div>
                   <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                     {allDone && <span style={{ fontSize: "12px" }}>✅</span>}
                     <div style={{ color: mc, fontSize: "14px", transition: "transform .2s", transform: expanded ? "rotate(90deg)" : "rotate(0)" }}>›</div>
                   </div>
                 </div>
-                {expanded && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "6px", paddingLeft: "8px" }}>
-                    {group.tasks.map(task => <TaskCard key={task.id} task={task} />)}
-                  </div>
-                )}
+                {expanded && <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "6px", paddingLeft: "8px" }}>{group.tasks.map(task => <TaskCard key={task.id} task={task} />)}</div>}
               </div>
             );
           })}
-
-          {/* Case notes */}
           <div style={{ marginTop: "16px" }}>
             <div style={{ fontSize: "10px", fontWeight: 700, color: mc, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>Case Notes</div>
-            <textarea
-              value={openCaseNotes}
-              onChange={e => setLs(token, `case-notes-${openCase}`, e.target.value)}
-              placeholder="Family preferences, sensitivities, special requests, contacts..."
-              rows={5}
-              style={{ width: "100%", background: ibg, border: `1px solid ${brd}`, borderRadius: "12px", color: tc, padding: "12px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", lineHeight: "1.6" }}
-            />
+            <textarea value={getLs(token, `case-notes-${openCase}`, "")} onChange={e => setLs(token, `case-notes-${openCase}`, e.target.value)} placeholder="Family preferences, sensitivities, special requests, contacts..." rows={5}
+              style={{ width: "100%", background: ibg, border: `1px solid ${brd}`, borderRadius: "12px", color: tc, padding: "12px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", lineHeight: "1.6" }} />
           </div>
         </div>
       )}
 
-      {/* ── HISTORY ── */}
+      {/* HISTORY */}
       {activeTab === 2 && (
         <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
           <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginBottom: "12px" }}>
-            {["all", "unfiled", ...familyFolders].map(f => (
-              <button key={f} className="fp" onClick={() => setHistoryFolder(f)} style={{ padding: "3px 10px", background: historyFolder === f ? "linear-gradient(135deg,#22d3ee88,#a78bfa88)" : ibg, color: historyFolder === f ? "#fff" : mc, border: `1px solid ${historyFolder === f ? "rgba(167,139,250,0.5)" : brd}`, borderRadius: "20px", fontSize: "10px", fontFamily: "inherit", fontWeight: 600, textTransform: "uppercase" }}>
-                {f === "all" ? `All (${doneTasks.length})` : f === "unfiled" ? "Unfiled" : `👨‍👩‍👧 ${f}`}
-              </button>
-            ))}
+            {["all", "unfiled", ...familyFolders].map(f => <button key={f} className="fp" onClick={() => setHistoryFolder(f)} style={{ padding: "3px 10px", background: historyFolder === f ? "linear-gradient(135deg,#22d3ee88,#a78bfa88)" : ibg, color: historyFolder === f ? "#fff" : mc, border: `1px solid ${historyFolder === f ? "rgba(167,139,250,0.5)" : brd}`, borderRadius: "20px", fontSize: "10px", fontFamily: "inherit", fontWeight: 600, textTransform: "uppercase" }}>{f === "all" ? `All (${doneTasks.length})` : f === "unfiled" ? "Unfiled" : `👨‍👩‍👧 ${f}`}</button>)}
           </div>
-          {historyFiltered.length === 0 ? (
-            <div style={{ textAlign: "center", marginTop: "40px" }}><KarenMascot size={50} animated /><div style={{ color: mc, fontSize: "13px", marginTop: "12px" }}>Nothing here yet.</div></div>
-          ) : (
+          {historyFiltered.length === 0 ? <div style={{ textAlign: "center", marginTop: "40px" }}><KarenMascot size={50} animated /><div style={{ color: mc, fontSize: "13px", marginTop: "12px" }}>Nothing here yet.</div></div> : (
             <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
               {historyFiltered.sort((a, b) => new Date(b.completedAt || b.createdAt) - new Date(a.completedAt || a.createdAt)).map(task => (
                 <div key={task.id} style={{ background: cb, border: `1px solid ${brd}`, borderLeft: "3px solid #1e293b", borderRadius: "12px", padding: "10px 12px", opacity: 0.65 }}>
                   <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
                     <span>✅</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: "12px", fontWeight: 600, textDecoration: "line-through", color: mc }}>{task.title}</div>
-                      <div style={{ fontSize: "10px", color: mc, marginTop: "2px", display: "flex", gap: "8px" }}>
-                        <span>{task.completedAt ? fmtDate(task.completedAt) : "Completed"}</span>
-                        {task.familyName && <span>👨‍👩‍👧 {task.familyName}</span>}
-                      </div>
-                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: "12px", fontWeight: 600, textDecoration: "line-through", color: mc }}>{task.title}</div><div style={{ fontSize: "10px", color: mc, marginTop: "2px", display: "flex", gap: "8px" }}><span>{task.completedAt ? fmtDate(task.completedAt) : "Completed"}</span>{task.familyName && <span>👨‍👩‍👧 {task.familyName}</span>}</div></div>
                     <div style={{ display: "flex", gap: "3px", flexShrink: 0 }}>
                       <button onClick={() => toggleTask(task.id)} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: "#a78bfa", padding: "2px 6px", cursor: "pointer", fontSize: "9px", fontFamily: "inherit" }}>↩</button>
                       <button onClick={() => setMovingTask(movingTask === task.id ? null : task.id)} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: mc, padding: "2px 6px", cursor: "pointer", fontSize: "9px" }}>📁</button>
-                      <button onClick={() => { if (window.confirm("Delete this task from history?")) deleteTask(task.id); }} style={{ background: "none", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "6px", color: "#ef4444", padding: "2px 6px", cursor: "pointer", fontSize: "9px" }}>🗑</button>
+                      <button onClick={() => { if (window.confirm("Delete from history?")) deleteTask(task.id); }} style={{ background: "none", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "6px", color: "#ef4444", padding: "2px 6px", cursor: "pointer", fontSize: "9px" }}>🗑</button>
                     </div>
                   </div>
                   {movingTask === task.id && (
                     <div style={{ marginTop: "8px", display: "flex", gap: "4px", flexWrap: "wrap" }}>
                       <span style={{ fontSize: "10px", color: mc, alignSelf: "center" }}>Move to:</span>
                       {familyFolders.map(folder => <button key={folder} onClick={() => { updateTasks(tasks.map(t => t.id === task.id ? { ...t, folder } : t)); setMovingTask(null); }} style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "6px", color: "#a78bfa", padding: "2px 7px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", fontWeight: 600 }}>{folder}</button>)}
-                      <div style={{ display: "flex", gap: "3px" }}>
-                        <input value={newFolderName} onChange={e => setNewFolderName(e.target.value)} placeholder="New folder..." style={{ ...is, padding: "2px 7px", fontSize: "10px", width: "90px" }} />
-                        {newFolderName && <button onClick={() => { updateTasks(tasks.map(t => t.id === task.id ? { ...t, folder: newFolderName.trim() } : t)); setMovingTask(null); setNewFolderName(""); }} style={{ background: "rgba(34,211,238,0.2)", border: "none", borderRadius: "6px", color: "#22d3ee", padding: "2px 7px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", fontWeight: 700 }}>✓</button>}
-                      </div>
+                      <div style={{ display: "flex", gap: "3px" }}><input value={newFolderName} onChange={e => setNewFolderName(e.target.value)} placeholder="New folder..." style={{ ...is, padding: "2px 7px", fontSize: "10px", width: "90px" }} />{newFolderName && <button onClick={() => { updateTasks(tasks.map(t => t.id === task.id ? { ...t, folder: newFolderName.trim() } : t)); setMovingTask(null); setNewFolderName(""); }} style={{ background: "rgba(34,211,238,0.2)", border: "none", borderRadius: "6px", color: "#22d3ee", padding: "2px 7px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", fontWeight: 700 }}>✓</button>}</div>
                     </div>
                   )}
                 </div>
@@ -925,15 +829,13 @@ function KarenMain({ token }) {
         </div>
       )}
 
-      {/* ── QUICK CAPTURE (floating) ── */}
+      {/* Quick capture */}
       <button onClick={() => { setActiveTab(0); setTimeout(() => inputRef.current?.focus(), 100); }}
         style={{ position: "fixed", bottom: "20px", right: "20px", width: "52px", height: "52px", borderRadius: "50%", background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "22px", boxShadow: "0 4px 20px rgba(167,139,250,0.4)", zIndex: 50, transition: "transform .2s" }}
-        onMouseEnter={e => e.target.style.transform = "scale(1.1)"}
-        onMouseLeave={e => e.target.style.transform = "scale(1)"}>
-        ⚡
-      </button>
+        onMouseEnter={e => e.currentTarget.style.transform = "scale(1.1)"}
+        onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}>⚡</button>
 
-      {/* ── QUIET MODE MODAL ── */}
+      {/* Quiet mode modal */}
       {showQuietMode && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
           <div style={{ background: darkMode ? "#1a1035" : "#fff", border: `1px solid ${brd}`, borderRadius: "20px", padding: "24px", width: "100%", maxWidth: "320px" }}>
@@ -947,7 +849,7 @@ function KarenMain({ token }) {
         </div>
       )}
 
-      {/* ── SETTINGS ── */}
+      {/* Settings */}
       {showSettings && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
           <div style={{ background: darkMode ? "#1a1035" : "#fff", border: `1px solid ${brd}`, borderRadius: "20px 20px 0 0", width: "100%", maxWidth: "480px", maxHeight: "88dvh", display: "flex", flexDirection: "column" }}>
@@ -959,7 +861,6 @@ function KarenMain({ token }) {
               {["general", "templates", "contacts", "documents", "help"].map(t => <button key={t} onClick={() => setSettingsTab(t)} style={{ flexShrink: 0, padding: "7px 12px", background: settingsTab === t ? "rgba(167,139,250,0.2)" : "none", border: `1px solid ${settingsTab === t ? "#a78bfa" : brd}`, borderRadius: "8px", color: settingsTab === t ? "#a78bfa" : mc, cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 700, textTransform: "uppercase" }}>{t}</button>)}
             </div>
             <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px 24px" }}>
-
               {settingsTab === "general" && (
                 <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
                   <div style={{ background: "linear-gradient(135deg,#22d3ee22,#a78bfa22)", border: `1px solid ${brd}`, borderRadius: "14px", padding: "16px", marginBottom: "8px", textAlign: "center" }}>
@@ -973,19 +874,13 @@ function KarenMain({ token }) {
                     { label: "Voice Responses", sub: "Kare-N reads messages aloud", control: <button onClick={() => updateSettings({ voiceEnabled: !settings.voiceEnabled })} style={{ background: settings.voiceEnabled ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(255,255,255,0.05)", border: `1px solid ${brd}`, borderRadius: "20px", padding: "6px 14px", cursor: "pointer", color: settings.voiceEnabled ? "#fff" : mc, fontFamily: "inherit", fontWeight: 700, fontSize: "12px" }}>{settings.voiceEnabled ? "On" : "Off"}</button> },
                     { label: "App Lock", sub: "Optional PIN to open app", control: <button onClick={() => updateSettings({ pinEnabled: !settings.pinEnabled })} style={{ background: settings.pinEnabled ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(255,255,255,0.05)", border: `1px solid ${brd}`, borderRadius: "20px", padding: "6px 14px", cursor: "pointer", color: settings.pinEnabled ? "#fff" : mc, fontFamily: "inherit", fontWeight: 700, fontSize: "12px" }}>{settings.pinEnabled ? "On" : "Off"}</button> },
                   ].map(({ label, sub, control }) => <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: `1px solid ${brd}` }}><div><div style={{ fontSize: "13px", fontWeight: 600, color: tc }}>{label}</div><div style={{ fontSize: "10px", color: mc }}>{sub}</div></div>{control}</div>)}
-                  {settings.pinEnabled && (
-                    <div style={{ padding: "12px 0", borderBottom: `1px solid ${brd}` }}>
-                      <div style={{ fontSize: "13px", fontWeight: 600, color: tc, marginBottom: "8px" }}>Set PIN</div>
-                      <input type="password" maxLength={6} placeholder="Enter 4-6 digit PIN" value={settings.pin || ""} onChange={e => updateSettings({ pin: e.target.value })} style={{ ...is, width: "100%" }} />
-                    </div>
-                  )}
+                  {settings.pinEnabled && <div style={{ padding: "12px 0", borderBottom: `1px solid ${brd}` }}><div style={{ fontSize: "13px", fontWeight: 600, color: tc, marginBottom: "8px" }}>Set PIN</div><input type="password" maxLength={6} placeholder="Enter 4-6 digit PIN" value={settings.pin || ""} onChange={e => updateSettings({ pin: e.target.value })} style={{ ...is, width: "100%" }} /></div>}
                   <div style={{ padding: "12px 0" }}>
                     <div style={{ fontSize: "13px", fontWeight: 600, color: tc, marginBottom: "10px" }}>Feedback</div>
                     {feedbackSent ? <div style={{ color: "#34d399", fontWeight: 700, fontSize: "13px" }}>✓ Sent!</div> : <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}><textarea value={feedback} onChange={e => setFeedback(e.target.value)} placeholder="What's working, what's not..." rows={3} style={{ ...is, width: "100%", lineHeight: "1.5" }} /><button onClick={sendFeedback} disabled={!feedback.trim()} style={{ background: feedback.trim() ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(255,255,255,0.05)", border: "none", borderRadius: "10px", color: feedback.trim() ? "#fff" : mc, padding: "10px", cursor: feedback.trim() ? "pointer" : "not-allowed", fontFamily: "inherit", fontWeight: 700, fontSize: "13px" }}>Send Feedback</button></div>}
                   </div>
                 </div>
               )}
-
               {settingsTab === "templates" && (
                 <div>
                   <div style={{ fontSize: "12px", color: mc, marginBottom: "14px", lineHeight: 1.5 }}>Tell Kare-N to update your templates in chat — changes save automatically. Edit task names inline here.</div>
@@ -1005,27 +900,17 @@ function KarenMain({ token }) {
                   <button onClick={() => { const nt = { id: `template-${Date.now()}`, name: "New Template", description: "Custom workflow", color: "#34d399", groups: [{ name: "Group 1", tasks: ["Task 1", "Task 2"] }] }; const u = [...templates, nt]; setTemplates(u); setLs(token, "templates", u); }} style={{ width: "100%", background: "rgba(52,211,153,0.1)", border: "1px dashed rgba(52,211,153,0.4)", borderRadius: "12px", color: "#34d399", padding: "10px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "13px" }}>+ Create New Template</button>
                 </div>
               )}
-
               {settingsTab === "contacts" && (
                 <div>
-                  <div style={{ fontSize: "12px", color: mc, marginBottom: "14px", lineHeight: 1.5 }}>Save vendor and recurring contacts. Kare-N will recognize them by name when you mention them in chat.</div>
+                  <div style={{ fontSize: "12px", color: mc, marginBottom: "14px", lineHeight: 1.5 }}>Save vendor and recurring contacts. Kare-N will recognize them by name in chat.</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "16px" }}>
                     <input value={newVendorName} onChange={e => setNewVendorName(e.target.value)} placeholder="Contact name (e.g. King Mortuary)" style={{ ...is, width: "100%" }} />
                     <input value={newVendorPhone} onChange={e => setNewVendorPhone(e.target.value)} placeholder="Phone number" style={{ ...is, width: "100%" }} />
                     <button onClick={() => { if (!newVendorName.trim() || !newVendorPhone.trim()) return; const u = [...vendorContacts, { id: String(Date.now()), name: newVendorName.trim(), phone: newVendorPhone.trim() }]; setVendorContacts(u); setLs(token, "vendors", u); setNewVendorName(""); setNewVendorPhone(""); }} style={{ background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", borderRadius: "10px", color: "#fff", padding: "10px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "13px" }}>Save Contact</button>
                   </div>
-                  {vendorContacts.length === 0 ? <div style={{ textAlign: "center", color: mc, fontSize: "13px" }}>No contacts saved yet.</div> : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {vendorContacts.map(v => <div key={v.id} style={{ background: cb, border: `1px solid ${brd}`, borderRadius: "12px", padding: "12px 14px", display: "flex", alignItems: "center", gap: "10px" }}>
-                        <div style={{ flex: 1 }}><div style={{ fontSize: "13px", fontWeight: 600, color: tc }}>{v.name}</div><div style={{ fontSize: "11px", color: mc }}>{v.phone}</div></div>
-                        <a href={`tel:${v.phone}`} style={{ background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: "6px", color: "#34d399", padding: "4px 8px", fontSize: "11px", fontWeight: 700, textDecoration: "none" }}>📞</a>
-                        <button onClick={() => { const u = vendorContacts.filter(c => c.id !== v.id); setVendorContacts(u); setLs(token, "vendors", u); }} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: mc, padding: "4px 8px", cursor: "pointer", fontSize: "12px" }}>×</button>
-                      </div>)}
-                    </div>
-                  )}
+                  {vendorContacts.length === 0 ? <div style={{ textAlign: "center", color: mc, fontSize: "13px" }}>No contacts saved yet.</div> : <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>{vendorContacts.map(v => <div key={v.id} style={{ background: cb, border: `1px solid ${brd}`, borderRadius: "12px", padding: "12px 14px", display: "flex", alignItems: "center", gap: "10px" }}><div style={{ flex: 1 }}><div style={{ fontSize: "13px", fontWeight: 600, color: tc }}>{v.name}</div><div style={{ fontSize: "11px", color: mc }}>{v.phone}</div></div><a href={`tel:${v.phone}`} style={{ background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: "6px", color: "#34d399", padding: "4px 8px", fontSize: "11px", fontWeight: 700, textDecoration: "none" }}>📞</a><button onClick={() => { const u = vendorContacts.filter(c => c.id !== v.id); setVendorContacts(u); setLs(token, "vendors", u); }} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: mc, padding: "4px 8px", cursor: "pointer", fontSize: "12px" }}>×</button></div>)}</div>}
                 </div>
               )}
-
               {settingsTab === "documents" && (
                 <div>
                   <div style={{ fontSize: "12px", color: mc, marginBottom: "14px", lineHeight: 1.5 }}>Upload your forms, checklists, and documents.</div>
@@ -1034,28 +919,17 @@ function KarenMain({ token }) {
                   {documents.length === 0 ? <div style={{ textAlign: "center", color: mc, fontSize: "13px" }}>No documents yet.</div> : <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>{documents.map(doc => <div key={doc.id} style={{ background: cb, border: `1px solid ${brd}`, borderRadius: "12px", padding: "12px 14px", display: "flex", alignItems: "center", gap: "10px" }}><div style={{ fontSize: "22px" }}>{doc.type?.includes("pdf") ? "📄" : doc.type?.includes("image") ? "🖼" : "📝"}</div><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: "13px", fontWeight: 600, color: tc, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.name}</div><div style={{ fontSize: "10px", color: mc }}>{new Date(doc.uploadedAt).toLocaleDateString()}</div></div><div style={{ display: "flex", gap: "4px" }}><a href={doc.data} download={doc.name} style={{ background: "rgba(34,211,238,0.1)", border: "1px solid rgba(34,211,238,0.3)", borderRadius: "6px", color: "#22d3ee", padding: "4px 8px", fontSize: "10px", fontWeight: 700, textDecoration: "none" }}>↓</a><button onClick={() => { const u = documents.filter(d => d.id !== doc.id); setDocuments(u); setLs(token, "docs", u); }} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: mc, padding: "4px 8px", cursor: "pointer", fontSize: "12px" }}>×</button></div></div>)}</div>}
                 </div>
               )}
-
               {settingsTab === "help" && (
                 <div>
                   <div style={{ fontSize: "14px", fontWeight: 700, color: tc, marginBottom: "14px" }}>Quick Tips</div>
-                  {[
-                    ["👨‍👩‍👧", "New family case", "Tap the 'New Family Case' button or say 'new family' in chat"],
-                    ["🎙", "Voice input", "Tap the microphone to speak a task instead of typing"],
-                    ["⚡", "Quick capture", "Tap the lightning bolt to instantly log anything from any screen"],
-                    ["🔕", "Quiet mode", "Tap the bell icon before a service to silence everything"],
-                    ["📋", "Debrief", "After completing an arrangement, Kare-N will ask for a debrief automatically"],
-                    ["✏️", "Edit templates", "Tell Kare-N 'update my cremation template' and she'll save the change"],
-                    ["🔊", "Voice responses", "Tap the speaker icon on any message to hear it read aloud"],
-                    ["🔒", "App lock", "Enable PIN in General settings to protect the app"],
-                    ["🌐", "Access anywhere", "Your URL works on any browser, any device — your data follows you"],
-                  ].map(([icon, title, desc]) => (
+                  {[["👨‍👩‍👧", "New family case", "Tap 'New Family Case' or say 'new family' in chat"], ["🎙", "Voice input", "Tap the microphone to speak a task — works in chat and onboarding"], ["⚡", "Quick capture", "Tap the lightning bolt to instantly log anything from any screen"], ["🔕", "Quiet mode", "Tap the bell icon before a service to silence everything"], ["📋", "Arrangement debrief", "Complete the arrangement task and Kare-N asks for a debrief automatically"], ["✏️", "Edit templates", "Tell Kare-N to update your template and she saves the change"], ["🔊", "Voice responses", "Tap the speaker on any message to hear it read aloud"], ["🔒", "App lock", "Enable PIN in General settings to protect the app"], ["🌐", "Access anywhere", "Your URL works on any browser, any device — your data follows you"]].map(([icon, title, desc]) => (
                     <div key={title} style={{ display: "flex", gap: "12px", padding: "12px 0", borderBottom: `1px solid ${brd}` }}>
                       <div style={{ fontSize: "20px", flexShrink: 0 }}>{icon}</div>
                       <div><div style={{ fontSize: "13px", fontWeight: 600, color: tc, marginBottom: "3px" }}>{title}</div><div style={{ fontSize: "11px", color: mc, lineHeight: 1.5 }}>{desc}</div></div>
                     </div>
                   ))}
                   <div style={{ padding: "16px 0" }}>
-                    <div style={{ fontSize: "13px", fontWeight: 600, color: tc, marginBottom: "10px" }}>Voice</div>
+                    <div style={{ fontSize: "13px", fontWeight: 600, color: tc, marginBottom: "8px" }}>Voice</div>
                     <div style={{ fontSize: "11px", color: mc, marginBottom: "8px" }}>Kare-N speaks with a female voice by default. Change it here:</div>
                     <select value={settings.selectedVoice || ""} onChange={e => updateSettings({ selectedVoice: e.target.value || null })} style={{ ...is, width: "100%" }}>
                       <option value="">Default female voice</option>
@@ -1064,7 +938,7 @@ function KarenMain({ token }) {
                     {availableVoices.length > 0 && <button onClick={() => speak("Hey, I'm Kare-N. Ready to help.", settings.selectedVoice, false)} style={{ marginTop: "8px", background: "rgba(167,139,250,0.1)", border: `1px solid ${brd}`, borderRadius: "8px", color: "#a78bfa", padding: "6px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", fontWeight: 700 }}>Test Voice</button>}
                   </div>
                   <div style={{ padding: "12px 0" }}>
-                    <button onClick={() => { if (window.confirm("Redo setup? This will run the onboarding interview again.")) { setLs(token, "profile", null); window.location.reload(); } }} style={{ background: "rgba(255,255,255,0.05)", border: `1px solid ${brd}`, borderRadius: "10px", color: mc, padding: "10px 16px", cursor: "pointer", fontFamily: "inherit", fontSize: "13px", width: "100%" }}>Redo Setup Interview</button>
+                    <button onClick={() => { if (window.confirm("Redo setup? This will run the onboarding interview again.")) { setLs(token, "profile", null); localStorage.removeItem(`karen-onboarded-${token}`); window.location.reload(); } }} style={{ background: "rgba(255,255,255,0.05)", border: `1px solid ${brd}`, borderRadius: "10px", color: mc, padding: "10px 16px", cursor: "pointer", fontFamily: "inherit", fontSize: "13px", width: "100%" }}>Redo Setup Interview</button>
                   </div>
                 </div>
               )}
@@ -1073,7 +947,7 @@ function KarenMain({ token }) {
         </div>
       )}
 
-      {/* ── FAMILY INTAKE ── */}
+      {/* Family intake */}
       {showFamilyIntake && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
           <div style={{ background: darkMode ? "#1a1035" : "#fff", border: `1px solid ${brd}`, borderRadius: "20px", padding: "24px", width: "100%", maxWidth: "380px" }}>
@@ -1109,19 +983,26 @@ export default function App() {
     if (path === "/admin") { setView("admin"); return; }
     const urlToken = getTokenFromURL();
     if (!urlToken) { setView("locked"); return; }
-    if (VALID_TOKENS[urlToken]) {
-      setToken(urlToken);
-      const profile = getLs(urlToken, "profile", null);
-      const onboardingDone = localStorage.getItem(`karen-onboarded-${urlToken}`);
-      if (!onboardingDone && !profile) { setView("onboarding"); }
-      else { setView("app"); }
-    } else { setView("locked"); }
+    if (!VALID_TOKENS[urlToken]) { setView("locked"); return; }
+    setToken(urlToken);
+    // Check Blob first for onboarding flag — works across all devices
+    fetch(`/api/chat?token=${encodeURIComponent(urlToken)}&type=onboarding`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.onboarded) { setView("app"); }
+        else {
+          // Fallback to localStorage
+          const localDone = localStorage.getItem(`karen-onboarded-${urlToken}`);
+          setView(localDone ? "app" : "onboarding");
+        }
+      })
+      .catch(() => {
+        const localDone = localStorage.getItem(`karen-onboarded-${urlToken}`);
+        setView(localDone ? "app" : "onboarding");
+      });
   }, []);
 
-  function handleOnboardingComplete(profile) {
-    localStorage.setItem(`karen-onboarded-${token}`, "true");
-    setView("app");
-  }
+  function handleOnboardingComplete() { setView("app"); }
 
   const settings = token ? getLs(token, "settings", defaultSettings) : defaultSettings;
   const needsPin = settings.pinEnabled && settings.pin && !unlocked;
