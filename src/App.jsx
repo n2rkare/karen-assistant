@@ -829,25 +829,27 @@ function KarenMain({ token }) {
         </div>
       )}
 
-      <button
-  onClick={() => {
-    setActiveTab(0);
-    setTimeout(() => {
-      inputRef.current?.focus();
-      if (!listening) {
-        const r = startVoiceInput(
-          transcript => { setInput(p => p ? p + " " + transcript : transcript); setListening(false); },
-          () => setListening(false)
-        );
-        if (r) { recognitionRef.current = r; setListening(true); }
-      }
-    }, 200);
-  }}
-  style={{ position: "fixed", bottom: "20px", right: "20px", width: "52px", height: "52px", borderRadius: "50%", background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "22px", boxShadow: "0 4px 20px rgba(167,139,250,0.4)", zIndex: 50, transition: "transform .2s" }}
-  onMouseEnter={e => e.currentTarget.style.transform = "scale(1.1)"}
-  onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}>
-  ⚡
-</button>
+      {activeTab !== 0 && (
+  <button
+    onClick={() => {
+      setActiveTab(0);
+      setTimeout(() => {
+        inputRef.current?.focus();
+        if (!listening) {
+          const r = startVoiceInput(
+            transcript => { setInput(p => p ? p + " " + transcript : transcript); setListening(false); },
+            () => setListening(false)
+          );
+          if (r) { recognitionRef.current = r; setListening(true); }
+        }
+      }, 200);
+    }}
+    style={{ position: "fixed", bottom: "20px", left: "20px", width: "52px", height: "52px", borderRadius: "50%", background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "22px", boxShadow: "0 4px 20px rgba(167,139,250,0.4)", zIndex: 50, transition: "transform .2s" }}
+    onMouseEnter={e => e.currentTarget.style.transform = "scale(1.1)"}
+    onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}>
+    🎙
+  </button>
+)}
       {/* Quiet mode modal */}
       {showQuietMode && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
