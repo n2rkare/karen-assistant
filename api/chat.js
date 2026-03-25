@@ -96,9 +96,9 @@ export default async function handler(req, res) {
 
       // Clean response
       const cleanedText = fullText
-        .replace(/TASK_DATA_START[\s\S]*?TASK_DATA_END/g, '')
-        .trim();
-
+  .replace(/TASK_DATA_START[\s\S]*?TASK_DATA_END/g, '')
+  .replace(/TASK_DATA_START[\s\S]*/g, '')
+  .trim();
       return res.status(200).json({
         content: [{ type: 'text', text: cleanedText }],
         cleanedText,
