@@ -8,8 +8,17 @@ export default async function handler(req, res) {
   // ── Load tasks ──────────────────────────────────────────────────────────────
   if (req.method === 'GET') {
     try {
-      const { token } = req.query;
+      const { token, type } = req.query;
       if (!token) return res.status(400).json({ error: 'Missing token' });
+
+      // Load onboarding flag
+      if (type === 'onboarding') {
+        const { blobs } = await list({ prefix: `onboarded-${token}.json` });
+        if (!blobs || blobs.length === 0) return res.status(200).json({ onboarded: false });
+        return res.status(200).json({ onboarded: true });
+      }
+
+      // Load tasks
       const { blobs } = await list({ prefix: `tasks-${token}.json` });
       if (!blobs || blobs.length === 0) return res.status(200).json({ tasks: [] });
       const response = await fetch(blobs[0].url);
@@ -17,15 +26,27 @@ export default async function handler(req, res) {
       const tasks = await response.json();
       return res.status(200).json({ tasks });
     } catch {
-      return res.status(200).json({ tasks: [] });
+      return res.status(200).json({ tasks: [], onboarded: false });
     }
   }
 
-  // ── Save tasks directly ─────────────────────────────────────────────────────
+  // ── Save tasks or onboarding flag ───────────────────────────────────────────
   if (req.method === 'PUT') {
     try {
-      const { token, tasks } = req.body;
+      const { token, tasks, type, profile } = req.body;
       if (!token) return res.status(400).json({ error: 'Missing token' });
+
+      // Save onboarding complete flag
+      if (type === 'onboarding') {
+        await put(`onboarded-${token}.json`, JSON.stringify({ onboarded: true, profile, completedAt: new Date().toISOString() }), {
+          access: 'public',
+          allowOverwrite: true,
+          addRandomSuffix: false,
+        });
+        return res.status(200).json({ ok: true });
+      }
+
+      // Save tasks
       await put(`tasks-${token}.json`, JSON.stringify(tasks), {
         access: 'public',
         allowOverwrite: true,
@@ -55,10 +76,10 @@ export default async function handler(req, res) {
       const data = await response.json();
       const fullText = data.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
 
-      // Try to extract tasks from the response
+      // Extract and save tasks server-side
       let tasksSaved = false;
       const taskMatch = fullText.match(/TASK_DATA_START\s*([\s\S]*?)\s*TASK_DATA_END/);
-      
+
       if (taskMatch && token) {
         try {
           const parsed = JSON.parse(taskMatch[1].trim());
@@ -73,7 +94,7 @@ export default async function handler(req, res) {
         } catch (_) {}
       }
 
-      // Clean the response text - remove task data block
+      // Clean response
       const cleanedText = fullText
         .replace(/TASK_DATA_START[\s\S]*?TASK_DATA_END/g, '')
         .trim();
