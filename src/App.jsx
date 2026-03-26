@@ -147,10 +147,12 @@ BEHAVIOR:
 - Extract contacts, tasks, sensitivities, special requests from debrief naturally.
 - Support template modifications — update personal template and confirm saved.
 
-When tasks change output EXACTLY:
+When tasks change you MUST output EXACTLY this format and NO OTHER FORMAT. Do not use backticks. Do not use markdown code blocks. Use ONLY these exact delimiters:
 TASK_DATA_START
 {"action":"update","tasks":[FULL_ARRAY]}
 TASK_DATA_END
+
+Any other format will break the app. TASK_DATA_START and TASK_DATA_END are the ONLY acceptable delimiters.
 
 Task fields: { id, title, notes, priority, status, category, createdAt, dueDate, completedAt, recurring, subtasks, familyName, caseId, folder, group, lastActivity, phone, isArrangementTask, debriefDone }
 Priority: "high"|"medium"|"low". Status: "pending"|"done"|"snoozed".
