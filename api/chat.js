@@ -73,7 +73,12 @@ Due date rules:
 
 Today's date and time: ${new Date().toISOString()}
 User's local timezone: ${userTz}
-IMPORTANT: When user says a time like "9am" or "tomorrow at 2pm", interpret it in their local timezone (${userTz}) and convert correctly to UTC for the ISO string. For example if user is in America/New_York (UTC-4) and says "9am tomorrow", the UTC time would be "13:00:00Z" the next day.
+IMPORTANT: When user says a time like "9am" or "tomorrow at 2pm", interpret it in their local timezone (${userTz}).
+Current local time in ${userTz}: ${new Date().toLocaleString("en-US", { timeZone: userTz })}
+"Tomorrow" means the next calendar day in the user's local timezone.
+Convert the final local datetime to UTC for the ISO string.
+Do NOT add any extra offset on top of the timezone conversion — just convert once from local to UTC.
+`;
 
 Examples of what MUST create a task:
 - "remind me to..." → create task
