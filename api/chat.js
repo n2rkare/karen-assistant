@@ -39,36 +39,63 @@ export default async function handler(req, res) {
     try {
       const { messages, currentTasks, userId } = req.body;
 
-      const extractionPrompt = `You are a task extraction engine for a funeral director operations app.
+      const extractionPrompt = `You are a task extraction engine for a funeral director app. Your ONLY job is to extract tasks from conversations and return JSON.
 
-Based on the conversation below, determine what tasks need to be created, updated, or completed.
+IMPORTANT: Be aggressive about task creation. If ANY action item, reminder, or to-do is mentioned anywhere in the conversation, create a task for it.
 
-Current tasks in the system:
+Current tasks:
 ${JSON.stringify(currentTasks, null, 2)}
 
-Rules:
-- Only output a JSON array of task changes
-- Each item must have: action ("create"|"update"|"delete"), and task data
-- For "update" and "delete" include the task id
-- For "create" include all required fields
-- If no task changes are needed, output an empty array: []
-- Never output anything except valid JSON
-- Do not include any explanation, preamble, or markdown
+Instructions:
+- Return a JSON array of task changes
+- Each item: { "action": "create"|"update"|"delete", "task": { task fields } }
+- For create: include title, priority, status:"pending", category, due_date (ISO string or null), family_name (or null), case_slug (or null), group_name (or null), phone (or null), is_arrangement_task: false, debrief_done: false
+- For update: include id and only the fields that changed
+- For delete: include just the id
+- If NOTHING needs to change, return exactly: []
+- Return ONLY the JSON array — no explanation, no markdown, no backticks, no code fences
 
-Task fields: { id, title, notes, priority ("high"|"medium"|"low"), status ("pending"|"done"), category, due_date (ISO string or null), family_name (or null), case_slug (or null), group_name (or null), phone (or null), is_arrangement_task (bool), debrief_done (bool) }
+Priority rules:
+- phone calls = medium
+- family/case tasks = high
+- DC, crematory, ME auth = high
+- everything else = medium
 
-Categories: Operations, Families, Compliance, Admin, Marketing, Personal
+Category rules:
+- family name mentioned = Families
+- compliance/regulatory = Compliance
+- marketing = Marketing
+- personal = Personal
+- everything else = Operations
 
-Funeral industry shorthand:
-- "prep done on [name]" = mark all prep group tasks for that family done
-- "DC filed for [name]" = mark all Death Certificate group tasks done  
-- "arrangement complete for [name]" = mark arrangement task done, debrief_done stays false
-- "ME hold on [name]" = add note to case tasks "ME hold - pending authorization"
-- "BPT in hand for [name]" = mark burial permit task done
-- "ink done on [name]" = mark fingerprint collection task done
+Due date rules:
+- "tomorrow" = tomorrow at the default time
+- "today" = today at the default time
+- specific time mentioned = use that time today or tomorrow as context suggests
+- no time mentioned = null
 
-Conversation:
-${messages.map(m => `${m.role}: ${m.content}`).join('\n')}`;
+Examples of what MUST create a task:
+- "remind me to..." → create task
+- "I need to call..." → create task
+- "don't forget to..." → create task
+- "call [name] tomorrow at [time]" → create task with due_date
+- "file the DC" → create Families/Compliance task
+- "check on [family]" → create Families task
+- "pick up the remains" → create Families task
+- "need to order [anything]" → create task
+- "follow up with..." → create task
+
+Funeral shorthand:
+- "prep done on [name]" = update all prep group tasks for that family to status:done
+- "DC filed for [name]" = update all Death Certificate group tasks for that family to status:done
+- "BPT in hand for [name]" = update burial permit task to status:done
+- "ink done on [name]" = update fingerprint collection task to status:done
+- "arrangement complete for [name]" = update arrangement task to status:done
+
+Conversation to analyze:
+${messages.map(m => `${m.role}: ${m.content}`).join('\n')}
+
+Return the JSON array now:`;
 
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -87,6 +114,7 @@ ${messages.map(m => `${m.role}: ${m.content}`).join('\n')}`;
       const data = await response.json();
       const raw = data.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '[]';
 
+      // Parse the JSON response
       let changes = [];
       try {
         const clean = raw.replace(/```json|```/g, '').trim();
@@ -97,42 +125,50 @@ ${messages.map(m => `${m.role}: ${m.content}`).join('\n')}`;
       }
 
       // Apply changes to Supabase
-      const results = [];
+      let applied = 0;
       for (const change of changes) {
-        if (change.action === 'create') {
-          const { data: task, error } = await supabase
-            .from('tasks')
-            .insert({ ...change.task, user_id: userId })
-            .select()
-            .single();
-          if (!error) results.push(task);
-        } else if (change.action === 'update') {
-          const { id, ...updates } = change.task;
-          const { data: task, error } = await supabase
-            .from('tasks')
-            .update({ ...updates, last_activity: new Date().toISOString() })
-            .eq('id', id)
-            .eq('user_id', userId)
-            .select()
-            .single();
-          if (!error) results.push(task);
-        } else if (change.action === 'delete') {
-          await supabase.from('tasks').delete().eq('id', change.task.id).eq('user_id', userId);
-        }
+        try {
+          if (change.action === 'create') {
+            const { error } = await supabase
+              .from('tasks')
+              .insert({
+                ...change.task,
+                user_id: userId,
+                created_at: new Date().toISOString(),
+                last_activity: new Date().toISOString(),
+              });
+            if (!error) applied++;
+          } else if (change.action === 'update' && change.task?.id) {
+            const { id, ...updates } = change.task;
+            const { error } = await supabase
+              .from('tasks')
+              .update({ ...updates, last_activity: new Date().toISOString() })
+              .eq('id', id)
+              .eq('user_id', userId);
+            if (!error) applied++;
+          } else if (change.action === 'delete' && change.task?.id) {
+            const { error } = await supabase
+              .from('tasks')
+              .delete()
+              .eq('id', change.task.id)
+              .eq('user_id', userId);
+            if (!error) applied++;
+          }
+        } catch (_) {}
       }
 
-      return res.status(200).json({ changes, applied: results.length });
+      return res.status(200).json({ changes, applied });
     } catch (err) {
       return res.status(500).json({ error: 'Extraction failed', detail: err.message });
     }
   }
 
-  // ── ONBOARDING CHAT ────────────────────────────────────────────────────────
+  // ── ONBOARDING ─────────────────────────────────────────────────────────────
   if (req.method === 'POST' && req.body.type === 'onboarding') {
     try {
       const { messages, userId, profile } = req.body;
 
-      // If profile is complete, save it
+      // If profile is being saved
       if (profile && userId) {
         await supabase
           .from('users')
@@ -141,24 +177,26 @@ ${messages.map(m => `${m.role}: ${m.content}`).join('\n')}`;
         return res.status(200).json({ saved: true });
       }
 
-      const system = `You are Kare-N setting up a new funeral director's profile. Ask questions ONE AT A TIME in a warm, conversational way.
+      const system = `You are Kare-N setting up a new funeral director's profile. Ask questions ONE AT A TIME in a warm, conversational way. Acknowledge each answer naturally before asking the next.
 
 Questions to ask in order:
-1. What state are they licensed in?
+1. What state are they licensed in? (If NC, note they use NC DAVE for death certificates)
 2. Service mix — cremation, burial, or both?
-3. If cremation/mixed: what crematory do they use?
-4. If burial/mixed: casket supplier? Vault supplier?
+3. If cremation/mixed: what crematory do they use primarily?
+4. If burial/mixed: what casket supplier? What vault supplier?
 5. Do they handle their own transfers or use a removal service?
-6. In-house memorial products or outsource?
+6. In-house memorial products (urns, jewelry) or outsource?
 7. Do they handle their own obituaries?
-8. What CRM or family portal do they use?
+8. What family portal or CRM do they use? (Gather, Passare, etc.)
 9. Solo operator or part of a firm?
-10. Separate number for family calls? (mention Google Voice)
+10. Do they want a separate number for family calls? (mention Google Voice)
 
-When you have enough info, output EXACTLY:
+When you have enough information (after ~7-8 exchanges), output EXACTLY this and nothing else after it:
 PROFILE_COMPLETE
 {"state":"...","serviceMix":"...","crematory":"...","casketSupplier":"...","vaultSupplier":"...","transfers":"...","memorialProducts":"...","obituaries":"...","crm":"...","firmType":"...","separateNumber":"..."}
-PROFILE_COMPLETE`;
+PROFILE_COMPLETE
+
+Then tell them their personal workflow is ready and welcome them to Kare-N.`;
 
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -184,7 +222,10 @@ PROFILE_COMPLETE`;
         try {
           const profileData = JSON.parse(match[1].trim());
           if (userId) {
-            await supabase.from('users').update({ profile: profileData, onboarded: true }).eq('id', userId);
+            await supabase
+              .from('users')
+              .update({ profile: profileData, onboarded: true })
+              .eq('id', userId);
           }
           const cleanText = text.replace(/PROFILE_COMPLETE[\s\S]*?PROFILE_COMPLETE/g, '').trim();
           return res.status(200).json({ text: cleanText, profileComplete: true, profile: profileData });
