@@ -8,33 +8,24 @@ const supabase = createClient(
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  // ── CONVERSATION — Call 1 ──────────────────────────────────────────────────
+  // ── CONVERSATION ───────────────────────────────────────────────────────────
   if (req.method === 'POST' && req.body.type === 'chat') {
     try {
       const { messages, system } = req.body;
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.VITE_ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1000,
-          system,
-          messages,
-        }),
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.VITE_ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1000, system, messages }),
       });
       const data = await response.json();
-      const text = data.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
+      const text = data.content?.filter(b => b.type === 'text').map(b => b.text).join('') || "I didn't catch that — try again.";
       return res.status(200).json({ text });
     } catch (err) {
       return res.status(500).json({ error: 'Chat failed', detail: err.message });
     }
   }
 
-  // ── TASK EXTRACTION — Call 2 ───────────────────────────────────────────────
+  // ── TASK EXTRACTION ────────────────────────────────────────────────────────
   if (req.method === 'POST' && req.body.type === 'extract') {
     try {
       const { messages, currentTasks, userId, timezone } = req.body;
@@ -42,7 +33,7 @@ export default async function handler(req, res) {
 
       const extractionPrompt = `You are a task extraction engine for a funeral director app. Your ONLY job is to extract tasks from conversations and return JSON.
 
-IMPORTANT: Be aggressive about task creation. If ANY action item, reminder, or to-do is mentioned anywhere in the conversation, create a task for it.
+IMPORTANT: Be aggressive about task creation. If ANY action item, reminder, or to-do is mentioned, create a task for it.
 
 Current tasks:
 ${JSON.stringify(currentTasks, null, 2)}
@@ -50,87 +41,64 @@ ${JSON.stringify(currentTasks, null, 2)}
 Instructions:
 - Return a JSON array of task changes
 - Each item: { "action": "create"|"update"|"delete", "task": { task fields } }
-- For create: include ONLY these fields: title, priority, status, category, due_date, family_name, group_name, phone, is_arrangement_task, debrief_done
-- Do NOT include case_id, user_id, id, created_at, last_activity — these are handled server-side
+- For create: include ONLY: title, priority, status, category, due_date, family_name, group_name, phone, is_arrangement_task, debrief_done
+- Do NOT include case_id, user_id, id, created_at, last_activity
 - status must be "pending" for new tasks
-- due_date must be a full ISO string like "2026-03-27T10:00:00.000Z" or null
+- due_date must be a full ISO string or null
 - If NOTHING needs to change, return exactly: []
-- Return ONLY the JSON array — no explanation, no markdown, no backticks, no code fences
+- Return ONLY the JSON array — no explanation, no markdown, no backticks
 
-Priority rules:
-- phone calls = medium
-- family/case tasks = high
-- DC, crematory, ME auth = high
-- everything else = medium
-
+Priority: phone calls=medium, family/case tasks=high, DC/crematory/ME=high, else=medium
 Category options: Operations, Families, Compliance, Admin, Marketing, Personal
-
-Due date rules:
-- "tomorrow" = tomorrow's date at 10:00 AM
-- "today" = today at 10:00 AM
-- specific time mentioned = use that time
-- no time mentioned = null
 
 Today's date and time in user's timezone: ${new Date().toLocaleString("en-US", { timeZone: userTz })}
 Today's UTC date and time: ${new Date().toISOString()}
 User's local timezone: ${userTz}
-IMPORTANT: "Tomorrow" means the next calendar day in the user's local timezone shown above. When converting a local time to UTC, convert once only. Do not double-offset. If the user is in America/New_York (UTC-4) and says "9am tomorrow", calculate tomorrow's date in that timezone first, set the time to 9:00 AM local, then convert that single datetime to UTC.
+IMPORTANT: "Tomorrow" means the next calendar day in the user's local timezone. Convert local time to UTC once only. Do not double-offset.
 
-Examples of what MUST create a task:
+Examples that MUST create tasks:
 - "remind me to..." → create task
 - "I need to call..." → create task
-- "don't forget to..." → create task
 - "call [name] tomorrow at [time]" → create task with due_date
-- "file the DC" → create task, category Compliance
-- "check on [family]" → create task, category Families
-- "pick up the remains" → create task, category Families
-- "need to order [anything]" → create task
-- "follow up with..." → create task
+- "file the DC" → Compliance task
+- "check on [family]" → Families task
+- "pick up the remains" → Families task
 
-Funeral shorthand — for these, update existing tasks:
+Funeral shorthand — update existing tasks:
 - "prep done on [name]" = update all prep group tasks for that family to status:done
-- "DC filed for [name]" = update all Death Certificate group tasks for that family to status:done
+- "DC filed for [name]" = update all Death Certificate group tasks to status:done
 - "BPT in hand for [name]" = update burial permit task to status:done
-- "ink done on [name]" = update fingerprint collection task to status:done
+- "ink done on [name]" = update fingerprint task to status:done
 
-Conversation to analyze:
+Also check: if a task involves calling someone by name and a phone number is mentioned, include phone field.
+
+Conversation:
 ${messages.map(m => `${m.role}: ${m.content}`).join('\n')}
 
 Return the JSON array now:`;
 
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.VITE_ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 2000,
-          messages: [{ role: 'user', content: extractionPrompt }],
-        }),
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.VITE_ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 2000, messages: [{ role: 'user', content: extractionPrompt }] }),
       });
 
       const data = await response.json();
       const raw = data.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '[]';
 
-      // Parse JSON
       let changes = [];
       try {
         const clean = raw.replace(/```json|```/g, '').trim();
         changes = JSON.parse(clean);
         if (!Array.isArray(changes)) changes = [];
-      } catch (_) {
-        changes = [];
-      }
+      } catch (_) { changes = []; }
 
-      // Apply changes to Supabase
       let applied = 0;
+      let newCallTask = null;
+
       for (const change of changes) {
         try {
           if (change.action === 'create' && change.task) {
-            // Whitelist only safe columns — no case_id, no id
             const safeTask = {
               user_id: userId,
               title: change.task.title || 'Untitled task',
@@ -147,28 +115,27 @@ Return the JSON array now:`;
               created_at: new Date().toISOString(),
               last_activity: new Date().toISOString(),
             };
-            const { error } = await supabase.from('tasks').insert(safeTask);
-            if (!error) applied++;
+            const { data: created, error } = await supabase.from('tasks').insert(safeTask).select().single();
+            if (!error) {
+              applied++;
+              // Check if this is a call task with a name — prompt to save contact
+              if (safeTask.phone) {
+                const nameMatch = safeTask.title.match(/call\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i);
+                if (nameMatch) newCallTask = { taskId: created?.id, name: nameMatch[1], phone: safeTask.phone };
+              }
+            }
           } else if (change.action === 'update' && change.task?.id) {
             const { id, user_id, created_at, ...updates } = change.task;
-            const { error } = await supabase
-              .from('tasks')
-              .update({ ...updates, last_activity: new Date().toISOString() })
-              .eq('id', id)
-              .eq('user_id', userId);
+            const { error } = await supabase.from('tasks').update({ ...updates, last_activity: new Date().toISOString() }).eq('id', id).eq('user_id', userId);
             if (!error) applied++;
           } else if (change.action === 'delete' && change.task?.id) {
-            const { error } = await supabase
-              .from('tasks')
-              .delete()
-              .eq('id', change.task.id)
-              .eq('user_id', userId);
+            const { error } = await supabase.from('tasks').delete().eq('id', change.task.id).eq('user_id', userId);
             if (!error) applied++;
           }
         } catch (_) {}
       }
 
-      return res.status(200).json({ changes, applied });
+      return res.status(200).json({ changes, applied, newCallTask });
     } catch (err) {
       return res.status(500).json({ error: 'Extraction failed', detail: err.message });
     }
@@ -177,16 +144,12 @@ Return the JSON array now:`;
   // ── ONBOARDING ─────────────────────────────────────────────────────────────
   if (req.method === 'POST' && req.body.type === 'onboarding') {
     try {
-      const { messages, userId, profile } = req.body;
+      const { messages, userId, questionCount } = req.body;
 
-      if (profile && userId) {
-        await supabase.from('users').update({ profile, onboarded: true }).eq('id', userId);
-        return res.status(200).json({ saved: true });
-      }
+      const system = `You are Kare-N setting up a new funeral director's profile. Ask questions ONE AT A TIME. Acknowledge each answer warmly before asking the next.
 
-      const system = `You are Kare-N setting up a new funeral director's profile. Ask questions ONE AT A TIME in a warm, conversational way. Acknowledge each answer naturally before asking the next.
-
-Questions to ask in order:
+You must ask ALL of these questions before completing setup. Do not skip any:
+0. What should I call you? (get their preferred name first)
 1. What state are they licensed in?
 2. Service mix — cremation, burial, or both?
 3. If cremation/mixed: what crematory do they use primarily?
@@ -194,30 +157,23 @@ Questions to ask in order:
 5. Do they handle their own transfers or use a removal service?
 6. In-house memorial products (urns, jewelry) or outsource?
 7. Do they handle their own obituaries?
-8. What family portal or CRM do they use?
+8. What family portal or CRM do they use? (Gather, Passare, etc.)
 9. Solo operator or part of a firm?
-10. Separate number for family calls? (mention Google Voice)
+10. Do they want a separate number for family calls? Mention Google Voice as a free option for keeping personal and work numbers separate. Make sure to fully address this question before completing.
 
-When you have enough information, output EXACTLY:
+IMPORTANT: Only output PROFILE_COMPLETE after you have received answers to ALL questions including question 10 about the separate number. Do not complete early.
+
+When ALL questions are answered, output EXACTLY:
 PROFILE_COMPLETE
-{"state":"...","serviceMix":"...","crematory":"...","casketSupplier":"...","vaultSupplier":"...","transfers":"...","memorialProducts":"...","obituaries":"...","crm":"...","firmType":"...","separateNumber":"..."}
+{"displayName":"...","state":"...","serviceMix":"...","crematory":"...","casketSupplier":"...","vaultSupplier":"...","transfers":"...","memorialProducts":"...","obituaries":"...","crm":"...","firmType":"...","separateNumber":"..."}
 PROFILE_COMPLETE
 
-Then welcome them to Kare-N.`;
+Then welcome them warmly to Kare-N by name.`;
 
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.VITE_ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 500,
-          system,
-          messages,
-        }),
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.VITE_ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 600, system, messages }),
       });
 
       const data = await response.json();
@@ -227,11 +183,12 @@ Then welcome them to Kare-N.`;
       if (match) {
         try {
           const profileData = JSON.parse(match[1].trim());
+          const displayName = profileData.displayName || null;
           if (userId) {
-            await supabase.from('users').update({ profile: profileData, onboarded: true }).eq('id', userId);
+            await supabase.from('users').update({ profile: profileData, onboarded: true, display_name: displayName }).eq('id', userId);
           }
           const cleanText = text.replace(/PROFILE_COMPLETE[\s\S]*?PROFILE_COMPLETE/g, '').trim();
-          return res.status(200).json({ text: cleanText, profileComplete: true, profile: profileData });
+          return res.status(200).json({ text: cleanText, profileComplete: true, profile: profileData, displayName });
         } catch (_) {}
       }
 
