@@ -50,12 +50,13 @@ function startVoice(onResult, onEnd) {
 }
 
 // ── System prompt for chat ────────────────────────────────────────────────────
-function buildChatPrompt(tasks, cases, settings, contacts, profile) {
+function buildChatPrompt(tasks, cases, settings, contacts, profile, memberName) {
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
   const time = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   const profileStr = profile ? `\nDIRECTOR PROFILE: ${JSON.stringify(profile)}` : "";
   const contactStr = contacts?.length ? `\nSAVED CONTACTS: ${contacts.map(c => `${c.name}: ${c.phone}`).join(", ")}` : "";
   return `You are Kare-N — a sharp, no-fluff AI operations partner for independent funeral directors. Today is ${today}, ${time}.${profileStr}${contactStr}
+Director's name: ${memberName}
 
 You speak funeral director fluently: NOK, Decedent, DC, BPT, ME Auth, First call, Arrangement, Prep (embalming+dressing+cosmetizing+casketing), Transfer/Removal, Cremated remains, Ink/Prints, Committal, At-need, Pre-need, Crematory, Inurnment, Officiant, Informant, Cash advance, GPL, DI.
 
@@ -63,11 +64,11 @@ ACTIVE CASES: ${cases?.filter(c => !c.closed_at).map(c => c.family_name).join(",
 PENDING TASKS: ${tasks?.filter(t => t.status === "pending").length || 0}
 
 BEHAVIOR:
-- Be direct, brief, no flattery
+- Be direct, brief, no flattery. Address the director by name (${memberName}) occasionally but not every message.
+- Do NOT ask follow-up questions. Acknowledge tasks in one sentence and move on.
 - First message of the day: give a briefing
-- When someone mentions a task, acknowledge it clearly so they know it was captured
+- When someone mentions a task, confirm it briefly: "Got it." or "On it." — one line max.
 - When arrangement task is checked complete, ask for debrief naturally
-- Extract contacts, tasks, sensitivities from debrief conversation
 - IMPORTANT: Do NOT output any JSON or task data blocks. A separate system handles task extraction. Just respond conversationally.
 - If the user says "quiet mode X hours" acknowledge it
 - Default due time: ${settings?.default_due_time || "10:00"}`;
@@ -227,7 +228,7 @@ function Onboarding({ userId, onComplete }) {
 
 // ── Main App ──────────────────────────────────────────────────────────────────
 function KarenMain({ user, userProfile }) {
-  const memberName = userProfile?.name?.split(" ")[0] || user.email.split("@")[0];
+  const memberName = userProfile?.display_name || userProfile?.name?.split(" ")[0] || user.email.split("@")[0];
   const [tasks, setTasks] = useState([]);
   const [cases, setCases] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -255,6 +256,7 @@ function KarenMain({ user, userProfile }) {
   const [pendingDebrief, setPendingDebrief] = useState(null);
   const [showQuietMode, setShowQuietMode] = useState(false);
   const [newVendorName, setNewVendorName] = useState(""); const [newVendorPhone, setNewVendorPhone] = useState("");
+  const [displayName, setDisplayName] = useState(userProfile?.display_name || userProfile?.name?.split(" ")[0] || "");
   const [expandedGroups, setExpandedGroups] = useState({});
   const [dataLoaded, setDataLoaded] = useState(false);
   const chatEndRef = useRef(null);
@@ -346,7 +348,7 @@ function KarenMain({ user, userProfile }) {
         body: JSON.stringify({
           type: "chat",
           messages: newMessages.map(m => ({ role: m.role, content: m.content })),
-          system: buildChatPrompt(tasks, cases, settings, contacts, userProfile?.profile),
+          system: buildChatPrompt(tasks, cases, settings, contacts, userProfile?.profile, memberName),
         }),
       });
       const chatData = await chatRes.json();
@@ -370,6 +372,7 @@ function KarenMain({ user, userProfile }) {
           messages: [...newMessages, { role: "assistant", content: responseText }].map(m => ({ role: m.role, content: m.content })),
           currentTasks: tasks,
           userId: user.id,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
       });
       const extractData = await extractRes.json();
@@ -848,6 +851,10 @@ function KarenMain({ user, userProfile }) {
                   <div style={{ background: "linear-gradient(135deg,#22d3ee22,#a78bfa22)", border: `1px solid ${brd}`, borderRadius: "14px", padding: "16px", marginBottom: "8px", textAlign: "center" }}>
                     <div style={{ fontSize: "40px", fontWeight: 800, background: "linear-gradient(90deg,#22d3ee,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>{monthlyCount}</div>
                     <div style={{ fontSize: "12px", color: mc, fontWeight: 600 }}>tasks completed this month</div>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: `1px solid ${brd}` }}>
+                    <div><div style={{ fontSize: "13px", fontWeight: 600, color: tc }}>Your Name</div><div style={{ fontSize: "10px", color: mc }}>What Kare-N calls you</div></div>
+                    <input value={displayName} onChange={e => setDisplayName(e.target.value)} onBlur={async () => { if (displayName.trim()) { await supabase.from('users').update({ display_name: displayName.trim() }).eq('id', user.id); } }} placeholder="Enter your name" style={{ ...is, padding: "5px 10px", width: "140px", textAlign: "right" }} />
                   </div>
                   {[
                     { label: "Appearance", sub: "Dark or light theme", control: <button onClick={() => updateSettings({ dark_mode: !settings.dark_mode })} style={{ background: settings.dark_mode ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(167,139,250,0.2)", border: "none", borderRadius: "20px", padding: "6px 14px", cursor: "pointer", color: settings.dark_mode ? "#fff" : "#a78bfa", fontFamily: "inherit", fontWeight: 700, fontSize: "12px" }}>{settings.dark_mode ? "🌙 Dark" : "☀️ Light"}</button> },
