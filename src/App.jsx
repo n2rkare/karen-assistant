@@ -36,8 +36,17 @@ function speak(text, voiceName, quietMode) {
   window.speechSynthesis.cancel();
   const utt = new SpeechSynthesisUtterance(text);
   const voices = window.speechSynthesis.getVoices();
-  if (voiceName) { const v = voices.find(v => v.name === voiceName); if (v) utt.voice = v; }
-  else { const f = voices.find(v => /female|woman|girl|zira|susan|karen|samantha|victoria|allison|ava|nova|tessa|moira|fiona|veena|google us english/i.test(v.name)) || voices.find(v => /english/i.test(v.name) && !/male/i.test(v.name)); if (f) utt.voice = f; }
+  if (voiceName) {
+    const v = voices.find(v => v.name === voiceName);
+    if (v) utt.voice = v;
+  } else {
+    const female = voices.find(v => /female|woman|girl|zira|susan|karen|samantha|victoria|allison|ava|nova|tessa|moira|fiona|veena|google us english female/i.test(v.name))
+      || voices.find(v => /english/i.test(v.name) && !/male/i.test(v.name) && v.lang && v.lang.startsWith('en'));
+    if (female) utt.voice = female;
+  }
+  utt.rate = 0.95;
+  window.speechSynthesis.speak(utt);
+}
 
 function startVoice(onResult, onEnd) {
   if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) { alert("Voice input requires Chrome."); return null; }
