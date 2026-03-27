@@ -37,7 +37,8 @@ export default async function handler(req, res) {
   // ── TASK EXTRACTION — Call 2 ───────────────────────────────────────────────
   if (req.method === 'POST' && req.body.type === 'extract') {
     try {
-      const { messages, currentTasks, userId } = req.body;
+      const { messages, currentTasks, userId, timezone } = req.body;
+      const userTz = timezone || 'America/New_York';
 
       const extractionPrompt = `You are a task extraction engine for a funeral director app. Your ONLY job is to extract tasks from conversations and return JSON.
 
@@ -71,6 +72,8 @@ Due date rules:
 - no time mentioned = null
 
 Today's date and time: ${new Date().toISOString()}
+User's local timezone: ${userTz}
+IMPORTANT: When user says a time like "9am" or "tomorrow at 2pm", interpret it in their local timezone (${userTz}) and convert correctly to UTC for the ISO string. For example if user is in America/New_York (UTC-4) and says "9am tomorrow", the UTC time would be "13:00:00Z" the next day.
 
 Examples of what MUST create a task:
 - "remind me to..." → create task
