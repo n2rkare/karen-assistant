@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { supabase, sendMagicLink, signOut, getUser, upsertUser, updateUserProfile, getSettings, upsertSettings, getTasks, upsertTasks, deleteTask as dbDeleteTask, getCases, upsertCase, closeCase as dbCloseCase, deleteCase as dbDeleteCase, getCaseNotes, upsertCaseNotes, logActivity, getActivityLog, getTemplates, upsertTemplate, getContacts, upsertContact, deleteContact as dbDeleteContact, getDocuments, uploadDocument, getDocumentUrl, deleteDocument as dbDeleteDocument, saveFeedback, saveTestimonial, hasGivenTestimonial } from "./lib/supabase";
+import { supabase, sendMagicLink, signOut, upsertUser, getSettings, upsertSettings, getTasks, deleteTask as dbDeleteTask, getCases, upsertCase, closeCase as dbCloseCase, deleteCase as dbDeleteCase, upsertCaseNotes, logActivity, getContacts, upsertContact, deleteContact as dbDeleteContact, getDocuments, uploadDocument, getDocumentUrl, deleteDocument as dbDeleteDocument, saveFeedback } from "./lib/supabase";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const FIRM_TEMPLATES = [
@@ -7,7 +7,7 @@ const FIRM_TEMPLATES = [
   { id: "fullservice", name: "Full Service", description: "Full service burial workflow", color: "#a78bfa", groups: [{ name: "Portal", tasks: ["Invite Sent", "Accepted", "Packet"] }, { name: "Death Certificate", tasks: ["Input", "Dr. Sig", "Proof", "Release", "Order"] }, { name: "Obit", tasks: ["Input", "Draft", "Approval", "Publish"] }, { name: "Prep", tasks: ["Embalming", "Cosmetizing", "Dressing", "Casketing"] }, { name: "Church / Venue", tasks: ["Location Confirmed", "Officiant Contacted", "Officiant Confirmed", "Service Time Agreed", "Facility Access Confirmed"] }, { name: "Casket", tasks: ["Ordered", "Confirmed"] }, { name: "Vault", tasks: ["Ordered", "Confirmed"] }, { name: "Cemetery", tasks: ["Called", "Confirmed"] }, { name: "Service", tasks: ["Route Planned", "Confirmed"] }] },
 ];
 
-const DEFAULT_SETTINGS = { dark_mode: true, default_due_time: "10:00", default_category: "Operations", quiet_mode: false, quiet_until: null, pin_enabled: false, pin: null, end_of_day_time: "18:00", end_of_day_enabled: false, voice_enabled: true, selected_voice: null, screen_wake: true, deadline_reminder_min: 30 };
+const DEFAULT_SETTINGS = { dark_mode: true, default_due_time: "10:00", default_category: "Operations", quiet_mode: false, quiet_until: null, end_of_day_time: "18:00", end_of_day_enabled: false, voice_enabled: true, selected_voice: null, screen_wake: true, deadline_reminder_min: 30 };
 
 const priColors = { high: "#ef4444", medium: "#f59e0b", low: "#94a3b8" };
 const catColors = { Operations: "#22d3ee", Families: "#a78bfa", Compliance: "#f87171", Admin: "#94a3b8", Marketing: "#34d399", Personal: "#fb923c" };
@@ -22,14 +22,19 @@ function getUrgencyColor(task) {
   if (ms < 48 * 3600000) return "#ffbe0b";
   return "#00b4d8";
 }
-function isUrgent(task) { if (!task.due_date || task.status !== "pending") return false; return (new Date(task.due_date) - new Date()) < 16 * 3600000; }
-function isOverdue(task) { if (!task.due_date || task.status === "done") return false; return new Date(task.due_date) < new Date(); }
+function isUrgent(t) { if (!t.due_date || t.status !== "pending") return false; return (new Date(t.due_date) - new Date()) < 16 * 3600000; }
+function isOverdue(t) { if (!t.due_date || t.status === "done") return false; return new Date(t.due_date) < new Date(); }
 function fmtTime(d) { if (!d) return null; return new Date(d).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }); }
 function fmtDate(d) { if (!d) return null; const dt = new Date(d), t = new Date(), tom = new Date(t); tom.setDate(t.getDate() + 1); if (dt.toDateString() === t.toDateString()) return "Today"; if (dt.toDateString() === tom.toDateString()) return "Tomorrow"; return dt.toLocaleDateString("en-US", { month: "short", day: "numeric" }); }
 function delayDate(h) { const d = new Date(); d.setHours(d.getHours() + h, 0, 0, 0); return d.toISOString(); }
 function getTimeOfDay() { const h = new Date().getHours(); return h < 12 ? "morning" : h < 17 ? "afternoon" : "evening"; }
-function detectFamily(title) { const p = [/([A-Z][a-z]+)\s+(?:family|case|arrangement|service|funeral|cremation)/i, /(?:for|re:?)\s+([A-Z][a-z]+)/i]; for (const r of p) { const m = title.match(r); if (m) return m[1]; } return null; }
-function gcalLink(title, dueDate) { if (!dueDate) return null; const d = new Date(dueDate); const fmt = d => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z'; return `https://calendar.google.com/calendar/r/eventedit?text=${encodeURIComponent(title)}&dates=${fmt(d)}/${fmt(new Date(d.getTime() + 3600000))}`; }
+function gcalLink(title, dueDate) {
+  if (!dueDate) return null;
+  const d = new Date(dueDate);
+  const end = new Date(d.getTime() + 3600000);
+  const fmt = dt => dt.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${fmt(d)}/${fmt(end)}`;
+}
 
 function speak(text, voiceName, quietMode) {
   if (quietMode || !window.speechSynthesis) return;
@@ -41,7 +46,7 @@ function speak(text, voiceName, quietMode) {
     if (v) utt.voice = v;
   } else {
     const female = voices.find(v => /female|woman|girl|zira|susan|karen|samantha|victoria|allison|ava|nova|tessa|moira|fiona|veena|google us english female/i.test(v.name))
-      || voices.find(v => /english/i.test(v.name) && !/male/i.test(v.name) && v.lang && v.lang.startsWith('en'));
+      || voices.find(v => /english/i.test(v.name) && !/male/i.test(v.name) && v.lang && v.lang.startsWith("en"));
     if (female) utt.voice = female;
   }
   utt.rate = 0.95;
@@ -56,7 +61,48 @@ function startVoice(onResult, onEnd) {
   r.onerror = onEnd; r.onend = onEnd; r.start(); return r;
 }
 
-// ── System prompt for chat ────────────────────────────────────────────────────
+// ── Long press drag hook ──────────────────────────────────────────────────────
+function useLongPressDrag(items, onReorder) {
+  const [dragId, setDragId] = useState(null);
+  const [overIdx, setOverIdx] = useState(null);
+  const timerRef = useRef(null);
+  const draggingRef = useRef(false);
+
+  function onTouchStart(e, id) {
+    timerRef.current = setTimeout(() => {
+      draggingRef.current = true;
+      setDragId(id);
+      if (navigator.vibrate) navigator.vibrate(30);
+    }, 400);
+  }
+
+  function onTouchMove(e) {
+    if (!draggingRef.current) { clearTimeout(timerRef.current); return; }
+    e.preventDefault();
+    const y = e.touches[0].clientY;
+    const els = document.querySelectorAll("[data-drag-id]");
+    let found = null;
+    els.forEach(el => {
+      const rect = el.getBoundingClientRect();
+      if (y >= rect.top && y <= rect.bottom) found = el.getAttribute("data-drag-id");
+    });
+    if (found !== null) setOverIdx(items.findIndex(t => (t.id || t) === found));
+  }
+
+  function onTouchEnd() {
+    clearTimeout(timerRef.current);
+    if (draggingRef.current && dragId !== null && overIdx !== null) {
+      const fromIdx = items.findIndex(t => (t.id || t) === dragId);
+      if (fromIdx !== overIdx) onReorder(fromIdx, overIdx);
+    }
+    draggingRef.current = false;
+    setDragId(null); setOverIdx(null);
+  }
+
+  return { dragId, overIdx, onTouchStart, onTouchMove, onTouchEnd };
+}
+
+// ── System prompt ─────────────────────────────────────────────────────────────
 function buildChatPrompt(tasks, cases, settings, contacts, profile, memberName) {
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
   const time = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
@@ -65,19 +111,20 @@ function buildChatPrompt(tasks, cases, settings, contacts, profile, memberName) 
   return `You are Kare-N — a sharp, no-fluff AI operations partner for independent funeral directors. Today is ${today}, ${time}.${profileStr}${contactStr}
 Director's name: ${memberName}
 
-You speak funeral director fluently: NOK, Decedent, DC, BPT, ME Auth, First call, Arrangement, Prep (embalming+dressing+cosmetizing+casketing), Transfer/Removal, Cremated remains, Ink/Prints, Committal, At-need, Pre-need, Crematory, Inurnment, Officiant, Informant, Cash advance, GPL, DI.
+You speak funeral director fluently: NOK, Decedent, DC, BPT, ME Auth, First call, Arrangement, Prep, Transfer/Removal, Cremated remains, Ink/Prints, Committal, At-need, Pre-need, Crematory, Inurnment, Officiant, Informant, Cash advance, GPL, DI.
 
 ACTIVE CASES: ${cases?.filter(c => !c.closed_at).map(c => c.family_name).join(", ") || "none"}
 PENDING TASKS: ${tasks?.filter(t => t.status === "pending").length || 0}
 
 BEHAVIOR:
-- Be direct, brief, no flattery. Address the director by name (${memberName}) occasionally but not every message.
-- Do NOT ask follow-up questions. Acknowledge tasks in one sentence and move on.
-- First message of the day: give a briefing
-- When someone mentions a task, confirm it briefly: "Got it." or "On it." — one line max.
-- When arrangement task is checked complete, ask for debrief naturally
-- IMPORTANT: Do NOT output any JSON or task data blocks. A separate system handles task extraction. Just respond conversationally.
-- If the user says "quiet mode X hours" acknowledge it
+- Be direct, brief. Address ${memberName} occasionally but not every message.
+- Do NOT ask follow-up questions. Acknowledge tasks in one sentence max and move on.
+- First message of the day: give a briefing.
+- When someone mentions a task, confirm briefly: "Got it." or "On it." — one line.
+- When "first call" is mentioned for a family, confirm you've noted it and tell them to use "New Family Case" to spin up the full workflow, or ask if they want you to create a cremation or full service workflow.
+- When arrangement task is checked complete, ask for debrief naturally.
+- Do NOT output any JSON or task data blocks. A separate system handles task extraction.
+- If the user says "quiet mode X hours" acknowledge it.
 - Default due time: ${settings?.default_due_time || "10:00"}`;
 }
 
@@ -112,13 +159,9 @@ function KarenMascot({ size = 48, animated = false }) {
   );
 }
 
-// ── Magic Link Login ──────────────────────────────────────────────────────────
-function LoginScreen({ onLogin }) {
-  const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
+// ── Login ─────────────────────────────────────────────────────────────────────
+function LoginScreen() {
+  const [email, setEmail] = useState(""); const [sent, setSent] = useState(false); const [loading, setLoading] = useState(false); const [error, setError] = useState("");
   async function handleSend() {
     if (!email.trim()) return;
     setLoading(true); setError("");
@@ -126,7 +169,6 @@ function LoginScreen({ onLogin }) {
     if (error) { setError("Couldn't send link. Check your email and try again."); setLoading(false); return; }
     setSent(true); setLoading(false);
   }
-
   return (
     <div style={{ minHeight: "100dvh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "24px", background: "linear-gradient(135deg,#0f172a,#1a1035,#0f172a)", fontFamily: "'Nunito',sans-serif", padding: "40px 20px", textAlign: "center" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap');@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}`}</style>
@@ -156,31 +198,11 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-// ── PIN Lock ──────────────────────────────────────────────────────────────────
-function PinLock({ settings, onUnlock }) {
-  const [entered, setEntered] = useState(""); const [error, setError] = useState(false);
-  function check(val) { if (val === settings.pin) onUnlock(); else { setError(true); setEntered(""); setTimeout(() => setError(false), 1000); } }
-  function tap(d) { const n = entered + d; setEntered(n); if (n.length >= 4) check(n); }
-  return (
-    <div style={{ minHeight: "100dvh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg,#0f172a,#1a1035,#0f172a)", fontFamily: "'Nunito',sans-serif", gap: "32px" }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap');@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}`}</style>
-      <KarenMascot size={60} animated />
-      <div style={{ fontSize: "16px", fontWeight: 700, color: "#94a3b8" }}>Enter PIN</div>
-      <div style={{ display: "flex", gap: "16px" }}>{[0,1,2,3].map(i => <div key={i} style={{ width: "16px", height: "16px", borderRadius: "50%", background: i < entered.length ? (error ? "#ef4444" : "#a78bfa") : "rgba(255,255,255,0.1)", transition: "all .2s" }} />)}</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px" }}>
-        {[1,2,3,4,5,6,7,8,9,"",0,"⌫"].map((d, i) => (
-          <button key={i} onClick={() => { if (d === "⌫") setEntered(p => p.slice(0,-1)); else if (d !== "") tap(String(d)); }} disabled={d === ""}
-            style={{ width: "72px", height: "72px", borderRadius: "50%", background: d === "" ? "transparent" : "rgba(255,255,255,0.06)", border: d === "" ? "none" : "1px solid rgba(167,139,250,0.15)", color: "#e2e8f0", fontSize: d === "⌫" ? "18px" : "22px", fontWeight: 600, cursor: d === "" ? "default" : "pointer", fontFamily: "inherit" }}>{d}</button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // ── Onboarding ────────────────────────────────────────────────────────────────
 function Onboarding({ userId, onComplete }) {
-  const [messages, setMessages] = useState([{ role: "assistant", content: `Hey! I'm Kare-N. Before we get started, I want to make sure I'm set up for how you actually work. Just a few quick questions — type or speak your answers.\n\nFirst — what state are you licensed in?` }]);
+  const [messages, setMessages] = useState([{ role: "assistant", content: `Hey! I'm Kare-N. Before we get started, I want to get set up for how you actually work.\n\nFirst — what should I call you?` }]);
   const [input, setInput] = useState(""); const [loading, setLoading] = useState(false); const [listening, setListening] = useState(false);
+  const [questionCount, setQuestionCount] = useState(0);
   const chatEndRef = useRef(null); const inputRef = useRef(null); const recRef = useRef(null);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
@@ -195,11 +217,22 @@ function Onboarding({ userId, onComplete }) {
     setInput("");
     const newMessages = [...messages, { role: "user", content: text }];
     setMessages(newMessages); setLoading(true);
+    const newCount = questionCount + 1;
+    setQuestionCount(newCount);
     try {
-      const res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "onboarding", messages: newMessages.map(m => ({ role: m.role, content: m.content })), userId }) });
+      const res = await fetch("/api/chat", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "onboarding", messages: newMessages.map(m => ({ role: m.role, content: m.content })), userId, questionCount: newCount })
+      });
       const data = await res.json();
-      setMessages(prev => [...prev, { role: "assistant", content: data.text }]);
-      if (data.profileComplete) { setTimeout(() => onComplete(data.profile), 1500); }
+      if (data.text) setMessages(prev => [...prev, { role: "assistant", content: data.text }]);
+      if (data.profileComplete) {
+        // Save display name if captured
+        if (data.displayName) {
+          await supabase.from('users').update({ display_name: data.displayName }).eq('id', userId);
+        }
+        setTimeout(() => onComplete(data.profile), 1500);
+      }
     } catch { setMessages(prev => [...prev, { role: "assistant", content: "Connection error. Try again." }]); }
     finally { setLoading(false); inputRef.current?.focus(); }
   }
@@ -209,7 +242,7 @@ function Onboarding({ userId, onComplete }) {
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#a78bfa44;border-radius:2px}textarea{resize:none}@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}@keyframes pd{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.8)}}`}</style>
       <div style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: "12px", borderBottom: "1px solid rgba(167,139,250,0.15)" }}>
         <KarenMascot size={44} animated />
-        <div><div style={{ fontSize: "20px", fontWeight: 800, background: "linear-gradient(90deg,#22d3ee,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Welcome to Kare-N</div><div style={{ fontSize: "11px", color: "#64748b" }}>Let's get you set up</div></div>
+        <div><div style={{ fontSize: "20px", fontWeight: 800, background: "linear-gradient(90deg,#22d3ee,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Welcome to Kare-N</div><div style={{ fontSize: "11px", color: "#64748b" }}>Let's get you set up — type or speak</div></div>
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
         {messages.map((m, i) => (
@@ -233,13 +266,19 @@ function Onboarding({ userId, onComplete }) {
   );
 }
 
+// ── Auth callback ─────────────────────────────────────────────────────────────
+function AuthCallback() {
+  useEffect(() => { supabase.auth.onAuthStateChange((event, session) => { if (event === 'SIGNED_IN' && session) window.location.href = '/'; }); }, []);
+  return <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0f172a", fontFamily: "'Nunito',sans-serif" }}><style>{`@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}`}</style><div style={{ textAlign: "center" }}><KarenMascot size={60} animated /><div style={{ color: "#64748b", marginTop: "16px", fontSize: "14px" }}>Signing you in...</div></div></div>;
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 function KarenMain({ user, userProfile }) {
   const memberName = userProfile?.display_name || userProfile?.name?.split(" ")[0] || user.email.split("@")[0];
   const [tasks, setTasks] = useState([]);
   const [cases, setCases] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
-  const [templates, setTemplates] = useState(FIRM_TEMPLATES);
+  const [templates] = useState(FIRM_TEMPLATES);
   const [contacts, setContacts] = useState([]);
   const [documents, setDocuments] = useState([]);
   const [messages, setMessages] = useState([]);
@@ -249,6 +288,8 @@ function KarenMain({ user, userProfile }) {
   const [activeTab, setActiveTab] = useState(0);
   const [openCase, setOpenCase] = useState(null);
   const [caseNotes, setCaseNotes] = useState({});
+  const [editingCase, setEditingCase] = useState(null);
+  const [editCaseValues, setEditCaseValues] = useState({});
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState("general");
   const [listening, setListening] = useState(false);
@@ -263,42 +304,55 @@ function KarenMain({ user, userProfile }) {
   const [pendingDebrief, setPendingDebrief] = useState(null);
   const [showQuietMode, setShowQuietMode] = useState(false);
   const [newVendorName, setNewVendorName] = useState(""); const [newVendorPhone, setNewVendorPhone] = useState("");
-  const [displayName, setDisplayName] = useState(userProfile?.display_name || userProfile?.name?.split(" ")[0] || "");
   const [expandedGroups, setExpandedGroups] = useState({});
   const [dataLoaded, setDataLoaded] = useState(false);
-  const chatEndRef = useRef(null);
-  const inputRef = useRef(null);
-  const recRef = useRef(null);
-  const startXRef = useRef(null);
-  const fileInputRef = useRef(null);
+  const [displayName, setDisplayName] = useState(userProfile?.display_name || "");
+  const [addingTaskToGroup, setAddingTaskToGroup] = useState(null);
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [uploadingDoc, setUploadingDoc] = useState(false);
+  const [dragOverCase, setDragOverCase] = useState(null);
+  const [contactPrompt, setContactPrompt] = useState(null); // { taskId, name, phone }
+  const chatEndRef = useRef(null); const inputRef = useRef(null); const recRef = useRef(null);
+  const startXRef = useRef(null); const fileInputRef = useRef(null);
 
   const darkMode = settings.dark_mode;
   const quietMode = settings.quiet_mode && settings.quiet_until && new Date(settings.quiet_until) > new Date();
 
-  // Load all data on mount
+  // Load all data
   useEffect(() => {
     async function loadAll() {
       const [tasksRes, casesRes, settingsRes, contactsRes, docsRes] = await Promise.all([
-        getTasks(user.id), getCases(user.id), getSettings(user.id), getContacts(user.id), getDocuments(user.id)
+        getTasks(user.id), supabase.from('cases').select('*').eq('user_id', user.id).order('last_activity', { ascending: false }),
+        getSettings(user.id), getContacts(user.id), getDocuments(user.id)
       ]);
       if (tasksRes.data) setTasks(tasksRes.data);
       if (casesRes.data) setCases(casesRes.data);
       if (settingsRes.data) setSettings({ ...DEFAULT_SETTINGS, ...settingsRes.data });
       if (contactsRes.data) setContacts(contactsRes.data);
       if (docsRes.data) setDocuments(docsRes.data);
+
+      // Load case notes
+      if (casesRes.data?.length > 0) {
+        const notesRes = await supabase.from('case_notes').select('*').eq('user_id', user.id);
+        if (notesRes.data) {
+          const notesMap = {};
+          notesRes.data.forEach(n => { notesMap[n.case_id] = n.content; });
+          setCaseNotes(notesMap);
+        }
+      }
       setDataLoaded(true);
     }
     loadAll();
   }, [user.id]);
 
-  // Load voices
+  // Voices
   useEffect(() => {
     function load() { setAvailableVoices(window.speechSynthesis?.getVoices() || []); }
     load(); window.speechSynthesis?.addEventListener("voiceschanged", load);
     return () => window.speechSynthesis?.removeEventListener("voiceschanged", load);
   }, []);
 
-  // Screen wake lock
+  // Screen wake
   useEffect(() => {
     let wakeLock = null;
     async function req() { try { if (settings.screen_wake && 'wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {} }
@@ -332,82 +386,65 @@ function KarenMain({ user, userProfile }) {
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
 
   async function updateSettings(updates) {
-    const newSettings = { ...settings, ...updates };
-    setSettings(newSettings);
-    await upsertSettings(user.id, newSettings);
+    const s = { ...settings, ...updates }; setSettings(s); await upsertSettings(user.id, s);
   }
 
-  // Two-call message send
+  async function reloadTasks() {
+    const { data } = await getTasks(user.id);
+    if (data) { setTasks(data); return data; }
+    return tasks;
+  }
+
+  async function checkAutoClose(currentTasks) {
+    for (const c of cases.filter(cs => !cs.closed_at)) {
+      const ct = currentTasks.filter(t => t.case_id === c.id);
+      if (ct.length > 0 && ct.every(t => t.status === "done")) {
+        await supabase.from('cases').update({ closed_at: new Date().toISOString() }).eq('id', c.id);
+        await logActivity(c.id, user.id, "case_closed", "All tasks completed — auto-closed");
+        setCases(prev => prev.map(cs => cs.id === c.id ? { ...cs, closed_at: new Date().toISOString() } : cs));
+      }
+    }
+  }
+
+  // Two-call send
   async function sendMessage(overrideText) {
     const text = (overrideText || input).trim();
     if (!text || loading) return;
     setInput("");
     const userMsg = { role: "user", content: text };
     const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
-    setLoading(true);
-
+    setMessages(newMessages); setLoading(true);
     try {
-      // Call 1 — conversation
       const chatRes = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "chat",
-          messages: newMessages.map(m => ({ role: m.role, content: m.content })),
-          system: buildChatPrompt(tasks, cases, settings, contacts, userProfile?.profile, memberName),
-        }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "chat", messages: newMessages.map(m => ({ role: m.role, content: m.content })), system: buildChatPrompt(tasks, cases, settings, contacts, userProfile?.profile, memberName) }),
       });
       const chatData = await chatRes.json();
-      const responseText = chatData.text || "No response.";
+      const responseText = chatData.text || "I didn't catch that — try again.";
       setMessages(prev => [...prev, { role: "assistant", content: responseText }]);
       setLoading(false);
 
-      // Call 2 — task extraction (background, non-blocking)
-      // Only run if message likely contains an action item
-      const actionWords = ['remind', 'call', 'need to', "don't forget", 'follow up', 'pick up', 'order', 'file', 'send', 'schedule', 'check', 'confirm', 'update', 'contact', 'tomorrow', 'today', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', ' am', ' pm', 'morning', 'afternoon', 'evening', 'done', 'complete', 'finished', 'prep done', 'dc filed', 'bpt', 'ink done', 'arrangement', 'first call', 'transfer', 'pickup', 'pick up', 'crematory', 'cemetery', 'family', 'service', 'arrangement'];
-      const combinedText = (text + ' ' + responseText).toLowerCase();
-      const shouldExtract = actionWords.some(w => combinedText.includes(w));
-      if (!shouldExtract) { setExtracting(false); inputRef.current?.focus(); return; }
+      // Extraction — only if actionable
+      const actionWords = ['remind', 'call', 'need to', "don't forget", 'follow up', 'pick up', 'order', 'file', 'send', 'schedule', 'check', 'confirm', 'update', 'contact', 'tomorrow', 'today', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', ' am', ' pm', 'morning', 'afternoon', 'evening', 'done', 'complete', 'finished', 'prep done', 'dc filed', 'bpt', 'ink done', 'arrangement', 'first call', 'transfer', 'pickup', 'crematory', 'cemetery', 'family', 'service'];
+      const combined = (text + ' ' + responseText).toLowerCase();
+      if (!actionWords.some(w => combined.includes(w))) { setExtracting(false); inputRef.current?.focus(); return; }
 
       setExtracting(true);
       const extractRes = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "extract",
-          messages: [...newMessages, { role: "assistant", content: responseText }].map(m => ({ role: m.role, content: m.content })),
-          currentTasks: tasks,
-          userId: user.id,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "extract", messages: [...newMessages, { role: "assistant", content: responseText }].map(m => ({ role: m.role, content: m.content })), currentTasks: tasks, userId: user.id, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
       });
       const extractData = await extractRes.json();
       if (extractData.applied > 0) {
-        // Reload tasks from Supabase
-        const { data } = await getTasks(user.id);
-        if (data) setTasks(data);
-        // Check for auto-close cases
-        await checkAutoCloseCases(data || tasks);
+        const updated = await reloadTasks();
+        await checkAutoClose(updated);
+        // Check for call tasks with names — prompt for contact
+        if (extractData.newCallTask) setContactPrompt(extractData.newCallTask);
       }
-    } catch {
+    } catch (err) {
       setMessages(prev => [...prev, { role: "assistant", content: "Connection error. Try again." }]);
       setLoading(false);
-    } finally {
-      setExtracting(false);
-      inputRef.current?.focus();
-    }
-  }
-
-  async function checkAutoCloseCases(currentTasks) {
-    for (const c of cases.filter(cs => !cs.closed_at)) {
-      const caseTasks = currentTasks.filter(t => t.case_id === c.id);
-      if (caseTasks.length > 0 && caseTasks.every(t => t.status === "done")) {
-        await dbCloseCase(c.id);
-        await logActivity(c.id, user.id, "case_closed", "All tasks completed — case auto-closed");
-        setCases(prev => prev.map(cs => cs.id === c.id ? { ...cs, closed_at: new Date().toISOString() } : cs));
-      }
-    }
+    } finally { setExtracting(false); inputRef.current?.focus(); }
   }
 
   function toggleVoice() {
@@ -417,8 +454,7 @@ function KarenMain({ user, userProfile }) {
   }
 
   async function toggleTask(id) {
-    const task = tasks.find(t => t.id === id);
-    if (!task) return;
+    const task = tasks.find(t => t.id === id); if (!task) return;
     const newStatus = task.status === "done" ? "pending" : "done";
     const updates = { status: newStatus, completed_at: newStatus === "done" ? new Date().toISOString() : null, last_activity: new Date().toISOString() };
     setTasks(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
@@ -428,56 +464,90 @@ function KarenMain({ user, userProfile }) {
       setPendingDebrief(task);
       setTimeout(() => { setMessages(prev => [...prev, { role: "assistant", content: `How'd the ${task.family_name || ""} arrangement go? Tell me what I need to know.` }]); setActiveTab(0); }, 500);
     }
-    // Check for case auto-close
-    const updatedTasks = tasks.map(t => t.id === id ? { ...t, ...updates } : t);
-    await checkAutoCloseCases(updatedTasks);
+    const updated = tasks.map(t => t.id === id ? { ...t, ...updates } : t);
+    await checkAutoClose(updated);
   }
 
-  async function handleDeleteTask(id) {
-    setTasks(prev => prev.filter(t => t.id !== id));
-    await dbDeleteTask(id);
-  }
+  async function handleDeleteTask(id) { setTasks(prev => prev.filter(t => t.id !== id)); await dbDeleteTask(id); }
 
   async function delayTask(id, hours) {
-    const newDate = delayDate(hours);
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, due_date: newDate, status: "pending" } : t));
-    await supabase.from('tasks').update({ due_date: newDate, status: "pending" }).eq('id', id);
+    const nd = delayDate(hours);
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, due_date: nd, status: "pending" } : t));
+    await supabase.from('tasks').update({ due_date: nd, status: "pending" }).eq('id', id);
   }
 
   async function toggleSubtask(taskId, subtaskId, done) {
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, subtasks: t.subtasks.map(s => s.id === subtaskId ? { ...s, done: !s.done } : s) } : t));
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, subtasks: t.subtasks?.map(s => s.id === subtaskId ? { ...s, done: !s.done } : s) } : t));
     await supabase.from('subtasks').update({ done: !done }).eq('id', subtaskId);
   }
 
-  function startEdit(task) {
-    setEditingTask(task.id);
-    setEditValues({ title: task.title, notes: task.notes || "", priority: task.priority, category: task.category, due_date: task.due_date ? new Date(task.due_date).toISOString().slice(0,16) : "", phone: task.phone || "" });
+  async function addSubtask(taskId, title) {
+    if (!title.trim()) return;
+    const { data } = await supabase.from('subtasks').insert({ task_id: taskId, title: title.trim(), done: false, order_index: 0 }).select().single();
+    if (data) setTasks(prev => prev.map(t => t.id === taskId ? { ...t, subtasks: [...(t.subtasks || []), data] } : t));
   }
+
+  function startEdit(task) { setEditingTask(task.id); setEditValues({ title: task.title, notes: task.notes || "", priority: task.priority, category: task.category, due_date: task.due_date ? new Date(task.due_date).toISOString().slice(0,16) : "", phone: task.phone || "" }); }
   async function saveEdit(id) {
     const updates = { ...editValues, due_date: editValues.due_date ? new Date(editValues.due_date).toISOString() : null, last_activity: new Date().toISOString() };
     setTasks(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
     await supabase.from('tasks').update(updates).eq('id', id);
     setEditingTask(null);
+    // If phone added and name detected, offer to save to contacts
+    if (editValues.phone && editValues.title) {
+      const nameMatch = editValues.title.match(/call\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i);
+      if (nameMatch) setContactPrompt({ taskId: id, name: nameMatch[1], phone: editValues.phone });
+    }
+  }
+
+  async function addTaskToGroup(caseId, groupName) {
+    if (!newTaskTitle.trim()) return;
+    const caseData = cases.find(c => c.id === caseId);
+    const { data } = await supabase.from('tasks').insert({
+      user_id: user.id, case_id: caseId, title: newTaskTitle.trim(), notes: "", priority: "medium", status: "pending",
+      category: "Families", family_name: caseData?.family_name, group_name: groupName,
+      is_arrangement_task: false, debrief_done: false, created_at: new Date().toISOString(), last_activity: new Date().toISOString()
+    }).select().single();
+    if (data) setTasks(prev => [...prev, { ...data, subtasks: [] }]);
+    setNewTaskTitle(""); setAddingTaskToGroup(null);
+  }
+
+  async function reorderTasksInGroup(caseId, groupName, fromIdx, toIdx) {
+    const groupTasks = tasks.filter(t => t.case_id === caseId && (t.group_name || "General") === groupName);
+    const arr = [...groupTasks];
+    const [moved] = arr.splice(fromIdx, 1);
+    arr.splice(toIdx, 0, moved);
+    // Update order in state
+    const otherTasks = tasks.filter(t => !(t.case_id === caseId && (t.group_name || "General") === groupName));
+    setTasks([...otherTasks, ...arr]);
+  }
+
+  async function dropTaskToCase(taskId, caseId) {
+    const caseData = cases.find(c => c.id === caseId);
+    if (!caseData) return;
+    const updates = { case_id: caseId, family_name: caseData.family_name, category: "Families", last_activity: new Date().toISOString() };
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...updates } : t));
+    await supabase.from('tasks').update(updates).eq('id', taskId);
+    setDragOverCase(null);
   }
 
   async function handleCloseCase(caseId) {
     if (!window.confirm("Close this case and move all tasks to History?")) return;
-    await dbCloseCase(caseId);
-    const cId = cases.find(c => c.id === caseId);
-    if (cId) await logActivity(caseId, user.id, "case_closed", "Manually closed");
-    setCases(prev => prev.map(c => c.id === caseId ? { ...c, closed_at: new Date().toISOString() } : c));
+    await supabase.from('cases').update({ closed_at: new Date().toISOString() }).eq('id', caseId);
     await supabase.from('tasks').update({ status: "done", completed_at: new Date().toISOString() }).eq('case_id', caseId).eq('status', 'pending');
-    const { data } = await getTasks(user.id);
-    if (data) setTasks(data);
-    setOpenCase(null);
+    setCases(prev => prev.map(c => c.id === caseId ? { ...c, closed_at: new Date().toISOString() } : c));
+    await reloadTasks(); setOpenCase(null);
   }
 
   async function handleDeleteCase(caseId) {
     if (!window.confirm("Delete this case and all tasks? Cannot be undone.")) return;
-    await dbDeleteCase(caseId);
-    setCases(prev => prev.filter(c => c.id !== caseId));
-    setTasks(prev => prev.filter(t => t.case_id !== caseId));
-    setOpenCase(null);
+    await dbDeleteCase(caseId); setCases(prev => prev.filter(c => c.id !== caseId)); setTasks(prev => prev.filter(t => t.case_id !== caseId)); setOpenCase(null);
+  }
+
+  async function saveCaseEdit() {
+    await supabase.from('cases').update({ ...editCaseValues, last_activity: new Date().toISOString() }).eq('id', editingCase);
+    setCases(prev => prev.map(c => c.id === editingCase ? { ...c, ...editCaseValues } : c));
+    setEditingCase(null);
   }
 
   async function createFamilyWorkflow() {
@@ -486,50 +556,38 @@ function KarenMain({ user, userProfile }) {
     const tmpl = templates.find(t => t.id === tid) || templates[0];
     const familyName = name.split(" ").pop();
     const caseSlug = familyName.toLowerCase();
-
-    // Create case
-    const { data: newCase } = await upsertCase(user.id, {
-      family_name: familyName, case_slug: caseSlug, template_used: tmpl.name,
-      dob: dob || null, dod: dod || null, sex: sex || null,
-    });
+    const { data: newCase } = await upsertCase(user.id, { family_name: familyName, case_slug: caseSlug, template_used: tmpl.name, dob: dob || null, dod: dod || null, sex: sex || null });
     if (!newCase) return;
     setCases(prev => [newCase, ...prev]);
-
-    // Create tasks
     const taskInserts = [
       { title: `${name} — Arrangement Conference`, notes: "", priority: "high", status: "pending", category: "Families", family_name: familyName, case_id: newCase.id, group_name: "Arrangement", is_arrangement_task: true, debrief_done: false, user_id: user.id, created_at: new Date().toISOString(), last_activity: new Date().toISOString() },
-      ...tmpl.groups.flatMap(g => g.tasks.map(title => ({
-        title: `${name} — ${title}`, notes: "", priority: ["Death Certificate", "Crematory", "Prep"].includes(g.name) ? "high" : "medium",
-        status: "pending", category: "Families", family_name: familyName, case_id: newCase.id, group_name: g.name,
-        is_arrangement_task: false, debrief_done: false, user_id: user.id, created_at: new Date().toISOString(), last_activity: new Date().toISOString()
-      })))
+      ...tmpl.groups.flatMap(g => g.tasks.map(title => ({ title: `${name} — ${title}`, notes: "", priority: ["Death Certificate","Crematory","Prep"].includes(g.name) ? "high" : "medium", status: "pending", category: "Families", family_name: familyName, case_id: newCase.id, group_name: g.name, is_arrangement_task: false, debrief_done: false, user_id: user.id, created_at: new Date().toISOString(), last_activity: new Date().toISOString() })))
     ];
-
     const { data: newTasks } = await supabase.from('tasks').insert(taskInserts).select();
-    if (newTasks) setTasks(prev => [...prev, ...newTasks]);
+    if (newTasks) setTasks(prev => [...prev, ...newTasks.map(t => ({ ...t, subtasks: [] }))]);
     await logActivity(newCase.id, user.id, "case_created", `${tmpl.name} workflow created`);
     setMessages(prev => [...prev, { role: "assistant", content: `${tmpl.name} workflow created for the ${familyName} family. Tap the case folder in Tasks to see them.` }]);
     setShowFamilyIntake(false); setFamilyIntake({ name: "", dob: "", dod: "", sex: "", template: "cremation" }); setActiveTab(1);
   }
 
-  function activateQuietMode(hours) { const until = new Date(); until.setHours(until.getHours() + hours); updateSettings({ quiet_mode: true, quiet_until: until.toISOString() }); setShowQuietMode(false); }
+  function activateQuietMode(h) { const until = new Date(); until.setHours(until.getHours() + h); updateSettings({ quiet_mode: true, quiet_until: until.toISOString() }); setShowQuietMode(false); }
 
-  async function handleFeedback() {
-    if (!feedback.trim()) return;
-    await saveFeedback(user.id, feedback);
-    setFeedbackSent(true); setFeedback(""); setTimeout(() => setFeedbackSent(false), 2000);
-  }
+  async function handleFeedback() { if (!feedback.trim()) return; await saveFeedback(user.id, feedback); setFeedbackSent(true); setFeedback(""); setTimeout(() => setFeedbackSent(false), 2000); }
 
   async function handleDocUpload(e) {
     const file = e.target.files[0]; if (!file) return;
-    await uploadDocument(user.id, file);
-    const { data } = await getDocuments(user.id);
-    if (data) setDocuments(data);
+    setUploadingDoc(true);
+    try {
+      const { error } = await uploadDocument(user.id, file);
+      if (error) { alert("Upload failed. Try again."); } else { const { data } = await getDocuments(user.id); if (data) setDocuments(data); }
+    } finally { setUploadingDoc(false); }
   }
 
-  async function handleDeleteDoc(doc) {
-    await dbDeleteDocument(doc.id, doc.storage_path);
-    setDocuments(prev => prev.filter(d => d.id !== doc.id));
+  async function saveContactFromPrompt() {
+    if (!contactPrompt) return;
+    const exists = contacts.find(c => c.name.toLowerCase() === contactPrompt.name.toLowerCase());
+    if (!exists) { await upsertContact(user.id, { name: contactPrompt.name, phone: contactPrompt.phone, type: "vendor" }); const { data } = await getContacts(user.id); if (data) setContacts(data); }
+    setContactPrompt(null);
   }
 
   function handleTouchStart(e) { startXRef.current = e.touches[0].clientX; }
@@ -565,7 +623,15 @@ function KarenMain({ user, userProfile }) {
   const ibg = darkMode ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.9)";
   const is = { background: ibg, border: `1px solid ${brd}`, borderRadius: "10px", color: tc, padding: "8px 12px", fontSize: "13px", fontFamily: "inherit", outline: "none" };
 
-  function TaskCard({ task }) {
+  function TaskCard({ task, groupName, caseId }) {
+    const [addingSub, setAddingSub] = useState(false);
+    const [newSub, setNewSub] = useState("");
+    const drag = useLongPressDrag(task.subtasks || [], (fi, ti) => {
+      const arr = [...(task.subtasks || [])];
+      const [m] = arr.splice(fi, 1); arr.splice(ti, 0, m);
+      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, subtasks: arr } : t));
+    });
+
     if (editingTask === task.id) return (
       <div style={{ background: cb, border: `1px solid ${brd}`, borderLeft: `4px solid ${getUrgencyColor(task)}`, borderRadius: "14px", padding: "12px" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
@@ -584,38 +650,64 @@ function KarenMain({ user, userProfile }) {
         </div>
       </div>
     );
+
     const urgent = isUrgent(task);
     const calLink = gcalLink(task.title, task.due_date);
     return (
-      <div style={{ background: cb, border: `1px solid ${isOverdue(task) ? "rgba(239,68,68,0.2)" : brd}`, borderLeft: `4px solid ${getUrgencyColor(task)}`, borderRadius: "14px", padding: "11px 12px", opacity: task.status === "done" ? 0.45 : 1, transition: "all .15s" }}>
+      <div data-drag-id={task.id} style={{ background: cb, border: `1px solid ${isOverdue(task) ? "rgba(239,68,68,0.2)" : brd}`, borderLeft: `4px solid ${getUrgencyColor(task)}`, borderRadius: "14px", padding: "11px 12px", opacity: task.status === "done" ? 0.45 : 1, transition: "all .15s" }}>
         <div style={{ display: "flex", gap: "9px", alignItems: "flex-start" }}>
-          <button onClick={() => toggleTask(task.id)} style={{ width: "19px", height: "19px", minWidth: "19px", borderRadius: "50%", border: `2px solid ${task.status === "done" ? "#a78bfa" : "rgba(167,139,250,0.3)"}`, background: task.status === "done" ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", marginTop: "2px", flexShrink: 0 }}>
-            {task.status === "done" && <span style={{ fontSize: "9px", color: "#fff", fontWeight: 700 }}>✓</span>}
+          <button onClick={() => toggleTask(task.id)} style={{ width: "22px", height: "22px", minWidth: "22px", borderRadius: "50%", border: `2px solid ${task.status === "done" ? "#a78bfa" : "rgba(167,139,250,0.3)"}`, background: task.status === "done" ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", marginTop: "2px", flexShrink: 0 }}>
+            {task.status === "done" && <span style={{ fontSize: "11px", color: "#fff", fontWeight: 700 }}>✓</span>}
           </button>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: "13px", fontWeight: 600, color: task.status === "done" ? mc : tc, textDecoration: task.status === "done" ? "line-through" : "none", marginBottom: "2px", cursor: "pointer", display: "flex", alignItems: "center", gap: "5px" }} onClick={() => setExpandedTask(expandedTask === task.id ? null : task.id)}>
               <span style={{ flex: 1 }}>{task.title.includes(" — ") ? task.title.split(" — ").slice(1).join(" — ") : task.title}</span>
-              {urgent && <span style={{ fontSize: "8px", background: "#ff006e22", color: "#ff006e", padding: "1px 5px", borderRadius: "4px", fontWeight: 700, flexShrink: 0 }}>URGENT</span>}
+              {urgent && <span style={{ fontSize: "9px", background: "#ff006e22", color: "#ff006e", padding: "2px 6px", borderRadius: "4px", fontWeight: 700, flexShrink: 0 }}>URGENT</span>}
             </div>
             {task.due_date && <div style={{ fontSize: "11px", fontWeight: 800, color: getUrgencyColor(task), marginBottom: "3px" }}>{fmtDate(task.due_date)} at {fmtTime(task.due_date)}</div>}
-            {task.family_name && !openCase && <div style={{ fontSize: "9px", color: "#a78bfa", marginBottom: "3px" }}>👨‍👩‍👧 {task.family_name}</div>}
+            {task.family_name && !openCase && <div style={{ fontSize: "10px", color: "#a78bfa", marginBottom: "3px" }}>👨‍👩‍👧 {task.family_name}</div>}
             {expandedTask === task.id && (
               <div style={{ marginTop: "6px" }}>
                 {task.notes && <div style={{ fontSize: "11px", color: mc, marginBottom: "6px", lineHeight: 1.5 }}>{task.notes}</div>}
-                {task.subtasks?.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: "4px", marginBottom: "6px" }}>{task.subtasks.map(sub => <div key={sub.id} style={{ display: "flex", gap: "6px", alignItems: "center" }}><button onClick={() => toggleSubtask(task.id, sub.id, sub.done)} style={{ width: "14px", height: "14px", minWidth: "14px", borderRadius: "3px", border: `2px solid ${sub.done ? "#a78bfa" : "rgba(167,139,250,0.3)"}`, background: sub.done ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>{sub.done && <span style={{ fontSize: "7px", color: "#fff", fontWeight: 700 }}>✓</span>}</button><span style={{ fontSize: "11px", color: sub.done ? mc : tc, textDecoration: sub.done ? "line-through" : "none" }}>{sub.title}</span></div>)}</div>}
-                <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginBottom: "4px" }}>
-                  {task.phone && <a href={`tel:${task.phone}`} style={{ background: "rgba(52,211,153,0.15)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: "6px", color: "#34d399", padding: "3px 8px", fontSize: "10px", fontWeight: 700, textDecoration: "none" }}>📞 Call</a>}
-                  {calLink && <a href={calLink} target="_blank" rel="noreferrer" style={{ background: "rgba(34,211,238,0.1)", border: "1px solid rgba(34,211,238,0.2)", borderRadius: "6px", color: "#22d3ee", padding: "3px 8px", fontSize: "10px", fontWeight: 700, textDecoration: "none" }}>📅 Cal</a>}
+                {/* Subtasks */}
+                {(task.subtasks || []).length > 0 && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px", marginBottom: "6px" }}>
+                    {task.subtasks.map(sub => (
+                      <div key={sub.id} data-drag-id={sub.id}
+                        onTouchStart={e => drag.onTouchStart(e, sub.id)}
+                        onTouchMove={drag.onTouchMove}
+                        onTouchEnd={drag.onTouchEnd}
+                        style={{ display: "flex", gap: "6px", alignItems: "center", opacity: drag.dragId === sub.id ? 0.5 : 1 }}>
+                        <span style={{ color: mc, fontSize: "12px", cursor: "grab" }}>⠿</span>
+                        <button onClick={() => toggleSubtask(task.id, sub.id, sub.done)} style={{ width: "16px", height: "16px", minWidth: "16px", borderRadius: "3px", border: `2px solid ${sub.done ? "#a78bfa" : "rgba(167,139,250,0.3)"}`, background: sub.done ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>{sub.done && <span style={{ fontSize: "8px", color: "#fff", fontWeight: 700 }}>✓</span>}</button>
+                        <span style={{ fontSize: "12px", color: sub.done ? mc : tc, textDecoration: sub.done ? "line-through" : "none", flex: 1 }}>{sub.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* Add subtask */}
+                {addingSub ? (
+                  <div style={{ display: "flex", gap: "6px", marginBottom: "6px" }}>
+                    <input value={newSub} onChange={e => setNewSub(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { addSubtask(task.id, newSub); setNewSub(""); setAddingSub(false); } }} placeholder="Subtask..." style={{ ...is, flex: 1, padding: "4px 8px", fontSize: "12px" }} autoFocus />
+                    <button onClick={() => { addSubtask(task.id, newSub); setNewSub(""); setAddingSub(false); }} style={{ background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", borderRadius: "6px", color: "#fff", padding: "4px 8px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}>+</button>
+                    <button onClick={() => { setAddingSub(false); setNewSub(""); }} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: mc, padding: "4px 8px", cursor: "pointer", fontSize: "11px" }}>×</button>
+                  </div>
+                ) : (
+                  <button onClick={() => setAddingSub(true)} style={{ background: "none", border: `1px dashed ${brd}`, borderRadius: "6px", color: mc, padding: "2px 8px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit", marginBottom: "6px" }}>+ subtask</button>
+                )}
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "4px" }}>
+                  {task.phone && <a href={`tel:${task.phone}`} style={{ background: "rgba(52,211,153,0.15)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: "6px", color: "#34d399", padding: "4px 10px", fontSize: "11px", fontWeight: 700, textDecoration: "none" }}>📞 Call</a>}
+                  {calLink && <a href={calLink} target="_blank" rel="noreferrer" style={{ background: "rgba(34,211,238,0.1)", border: "1px solid rgba(34,211,238,0.2)", borderRadius: "6px", color: "#22d3ee", padding: "4px 10px", fontSize: "11px", fontWeight: 700, textDecoration: "none" }}>📅 Cal</a>}
                   {task.status === "pending" && <>
-                    <span style={{ fontSize: "9px", color: mc, alignSelf: "center" }}>Delay:</span>
-                    {[["1hr",1],["4hr",4],["12hr",12]].map(([label,hrs]) => <button key={label} onClick={() => delayTask(task.id, hrs)} style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "6px", color: "#a78bfa", padding: "2px 7px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", fontWeight: 700 }}>{label}</button>)}
-                    <button onClick={() => startEdit(task)} style={{ background: "rgba(34,211,238,0.1)", border: "1px solid rgba(34,211,238,0.3)", borderRadius: "6px", color: "#22d3ee", padding: "2px 7px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", fontWeight: 700 }}>✏️</button>
+                    <span style={{ fontSize: "10px", color: mc, alignSelf: "center" }}>Delay:</span>
+                    {[["1hr",1],["4hr",4],["12hr",12]].map(([label,hrs]) => <button key={label} onClick={() => delayTask(task.id, hrs)} style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "6px", color: "#a78bfa", padding: "4px 8px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit", fontWeight: 700 }}>{label}</button>)}
+                    <button onClick={() => startEdit(task)} style={{ background: "rgba(34,211,238,0.1)", border: "1px solid rgba(34,211,238,0.3)", borderRadius: "6px", color: "#22d3ee", padding: "4px 8px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit", fontWeight: 700 }}>✏️</button>
                   </>}
-                  <button onClick={() => handleDeleteTask(task.id)} style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "6px", color: "#ef4444", padding: "2px 7px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", fontWeight: 700 }}>🗑</button>
+                  <button onClick={() => handleDeleteTask(task.id)} style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "6px", color: "#ef4444", padding: "4px 8px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit", fontWeight: 700 }}>🗑</button>
                 </div>
                 <div style={{ display: "flex", gap: "4px" }}>
-                  <span style={{ fontSize: "9px", fontWeight: 700, textTransform: "uppercase", color: catColors[task.category] || mc, background: `${catColors[task.category] || mc}18`, border: `1px solid ${catColors[task.category] || mc}33`, padding: "1px 6px", borderRadius: "20px" }}>{task.category}</span>
-                  <span style={{ fontSize: "9px", fontWeight: 600, color: priColors[task.priority], textTransform: "uppercase" }}>{task.priority}</span>
+                  <span style={{ fontSize: "10px", fontWeight: 700, textTransform: "uppercase", color: catColors[task.category] || mc, background: `${catColors[task.category] || mc}18`, border: `1px solid ${catColors[task.category] || mc}33`, padding: "2px 7px", borderRadius: "20px" }}>{task.category}</span>
+                  <span style={{ fontSize: "10px", fontWeight: 600, color: priColors[task.priority], textTransform: "uppercase" }}>{task.priority}</span>
                 </div>
               </div>
             )}
@@ -645,11 +737,12 @@ function KarenMain({ user, userProfile }) {
         .stb{cursor:pointer;transition:all .15s}
         .case-folder{transition:all .15s;cursor:pointer}
         .case-folder:hover{border-color:rgba(167,139,250,0.4)!important;transform:translateY(-1px)}
+        .case-folder.drag-over{border-color:#22d3ee!important;background:rgba(34,211,238,0.08)!important}
         .group-row{transition:all .15s;cursor:pointer}
         .group-row:hover{background:rgba(167,139,250,0.05)!important}
       `}</style>
 
-      {/* Quiet mode banner */}
+      {/* Quiet banner */}
       {quietMode && <div style={{ background: "rgba(99,102,241,0.15)", borderBottom: "1px solid rgba(99,102,241,0.3)", padding: "6px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}><span style={{ fontSize: "11px", color: "#a5b4fc", fontWeight: 600 }}>🔕 Quiet mode until {fmtTime(settings.quiet_until)}</span><button onClick={() => updateSettings({ quiet_mode: false, quiet_until: null })} style={{ background: "none", border: "none", color: "#a5b4fc", cursor: "pointer", fontSize: "11px", fontWeight: 700 }}>End</button></div>}
 
       {/* Header */}
@@ -662,8 +755,8 @@ function KarenMain({ user, userProfile }) {
         <div style={{ display: "flex", gap: "5px", alignItems: "center" }}>
           {overdue.length > 0 && <div className="stb" onClick={() => { setActiveTab(1); setOpenCase(null); }} style={{ background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "8px", padding: "3px 8px", textAlign: "center" }}><div style={{ color: "#ef4444", fontWeight: 700, fontSize: "12px" }}>{overdue.length}</div><div style={{ color: "#ef4444", opacity: 0.7, fontSize: "9px" }}>overdue</div></div>}
           <div className="stb" onClick={() => { setActiveTab(1); setOpenCase(null); }} style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "8px", padding: "3px 8px", textAlign: "center" }}><div style={{ color: "#a78bfa", fontWeight: 700, fontSize: "12px" }}>{pending.length}</div><div style={{ color: "#a78bfa", opacity: 0.7, fontSize: "9px" }}>pending</div></div>
-          <button className="ib" onClick={() => setShowQuietMode(true)} style={{ fontSize: "16px" }}>{quietMode ? "🔕" : "🔔"}</button>
-          <button className="ib" onClick={() => setShowSettings(true)} style={{ fontSize: "17px" }}>⚙️</button>
+          <button className="ib" onClick={() => setShowQuietMode(true)} style={{ fontSize: "17px" }}>{quietMode ? "🔕" : "🔔"}</button>
+          <button className="ib" onClick={() => setShowSettings(true)} style={{ fontSize: "18px" }}>⚙️</button>
         </div>
       </div>
 
@@ -693,7 +786,7 @@ function KarenMain({ user, userProfile }) {
                 {m.role === "assistant" && <div style={{ flexShrink: 0, marginBottom: "2px" }}><KarenMascot size={26} /></div>}
                 <div style={{ maxWidth: "80%", padding: "10px 14px", paddingBottom: m.role === "assistant" ? "24px" : "10px", borderRadius: m.role === "user" ? "18px 18px 4px 18px" : "4px 18px 18px 18px", background: m.role === "user" ? (darkMode ? "linear-gradient(135deg,#1e3a5f,#1a1045)" : "linear-gradient(135deg,#dbeafe,#ede9fe)") : cb, border: `1px solid ${m.role === "user" ? "rgba(34,211,238,0.2)" : brd}`, fontSize: "13px", lineHeight: "1.6", color: m.role === "user" ? (darkMode ? "#bae6fd" : "#1e3a5f") : tc, whiteSpace: "pre-wrap", position: "relative" }}>
                   {m.content}
-                  {m.role === "assistant" && settings.voice_enabled && <button onClick={() => speak(m.content, settings.selected_voice, quietMode)} style={{ position: "absolute", bottom: "4px", right: "8px", background: "none", border: "none", color: mc, cursor: "pointer", fontSize: "12px", opacity: 0.6, padding: "2px" }}>🔊</button>}
+                  {m.role === "assistant" && settings.voice_enabled && <button onClick={() => speak(m.content, settings.selected_voice, quietMode)} style={{ position: "absolute", bottom: "4px", right: "8px", background: "none", border: "none", color: mc, cursor: "pointer", fontSize: "14px", opacity: 0.6, padding: "2px" }}>🔊</button>}
                 </div>
               </div>
             ))}
@@ -703,15 +796,15 @@ function KarenMain({ user, userProfile }) {
           <div style={{ padding: "10px 12px", borderTop: `1px solid ${brd}`, background: darkMode ? "rgba(15,23,42,0.9)" : "rgba(255,255,255,0.9)", backdropFilter: "blur(10px)", display: "flex", gap: "8px", alignItems: "flex-end", flexShrink: 0 }}>
             <div style={{ flex: 1, position: "relative" }}>
               <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }} placeholder={listening ? "Listening..." : "Tell me what you need to do..."} rows={2}
-                style={{ width: "100%", background: ibg, border: `1px solid ${listening ? "#a78bfa" : brd}`, borderRadius: "14px", color: tc, padding: "10px 44px 10px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", lineHeight: "1.5" }} />
-              <button onClick={toggleVoice} style={{ position: "absolute", right: "10px", bottom: "10px", width: "28px", height: "28px", borderRadius: "50%", background: listening ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(167,139,250,0.2)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "18px" }}>{listening ? "⏹" : "🎙"}</button>
+                style={{ width: "100%", background: ibg, border: `1px solid ${listening ? "#a78bfa" : brd}`, borderRadius: "14px", color: tc, padding: "10px 48px 10px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", lineHeight: "1.5" }} />
+              <button onClick={toggleVoice} style={{ position: "absolute", right: "10px", bottom: "10px", width: "30px", height: "30px", borderRadius: "50%", background: listening ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(167,139,250,0.2)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "18px" }}>{listening ? "⏹" : "🎙"}</button>
             </div>
-            <button onClick={() => sendMessage()} disabled={loading || !input.trim()} style={{ width: "40px", height: "40px", borderRadius: "14px", background: loading || !input.trim() ? "rgba(255,255,255,0.05)" : "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", cursor: loading || !input.trim() ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "15px", transition: "all .2s", flexShrink: 0 }}>{loading ? "⏳" : "✈️"}</button>
+            <button onClick={() => sendMessage()} disabled={loading || !input.trim()} style={{ width: "44px", height: "44px", borderRadius: "14px", background: loading || !input.trim() ? "rgba(255,255,255,0.05)" : "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", cursor: loading || !input.trim() ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "16px", transition: "all .2s", flexShrink: 0 }}>{loading ? "⏳" : "✈️"}</button>
           </div>
         </div>
       )}
 
-      {/* TASKS — main */}
+      {/* TASKS main */}
       {activeTab === 1 && !openCase && (
         <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
           {(urgentGeneral.length > 0 || urgentCase.length > 0) && (
@@ -736,7 +829,12 @@ function KarenMain({ user, userProfile }) {
                   const cp = tasks.filter(t => t.case_id === c.id && t.status === "pending");
                   const cu = cp.filter(isUrgent); const co = cp.filter(isOverdue);
                   return (
-                    <div key={c.id} className="case-folder" onClick={() => setOpenCase(c.id)} style={{ background: cb, border: `1px solid ${brd}`, borderRadius: "14px", padding: "14px 16px", display: "flex", alignItems: "center", gap: "12px" }}>
+                    <div key={c.id} className={`case-folder${dragOverCase === c.id ? " drag-over" : ""}`}
+                      onClick={() => setOpenCase(c.id)}
+                      onDragOver={e => { e.preventDefault(); setDragOverCase(c.id); }}
+                      onDragLeave={() => setDragOverCase(null)}
+                      onDrop={e => { e.preventDefault(); const tid = e.dataTransfer.getData("taskId"); if (tid) dropTaskToCase(tid, c.id); }}
+                      style={{ background: cb, border: `1px solid ${brd}`, borderRadius: "14px", padding: "14px 16px", display: "flex", alignItems: "center", gap: "12px" }}>
                       <div style={{ width: "40px", height: "40px", borderRadius: "12px", background: "linear-gradient(135deg,#22d3ee33,#a78bfa33)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "18px", flexShrink: 0 }}>👨‍👩‍👧</div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: "14px", fontWeight: 700, color: tc, marginBottom: "3px" }}>{c.family_name} Family</div>
@@ -746,7 +844,7 @@ function KarenMain({ user, userProfile }) {
                           {cu.length > 0 && <span style={{ color: "#ff006e", fontWeight: 700 }}>🔴 {cu.length} urgent</span>}
                         </div>
                       </div>
-                      <div style={{ color: mc, fontSize: "16px" }}>›</div>
+                      <div style={{ color: mc, fontSize: "18px" }}>›</div>
                     </div>
                   );
                 })}
@@ -760,34 +858,88 @@ function KarenMain({ user, userProfile }) {
       {/* CASE DETAIL */}
       {activeTab === 1 && openCase && openCaseData && (
         <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
-            <button onClick={() => setOpenCase(null)} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "8px", color: mc, padding: "6px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", fontWeight: 700 }}>← Back</button>
-            <div style={{ flex: 1 }}><div style={{ fontSize: "16px", fontWeight: 800, color: tc }}>{openCaseData.family_name} Family</div><div style={{ fontSize: "11px", color: mc }}>{openCaseTasks.filter(t => t.status === "pending").length} pending · {openCaseTasks.filter(t => t.status === "done").length} done</div></div>
-            <div style={{ display: "flex", gap: "6px" }}>
-              <button onClick={() => handleCloseCase(openCase)} style={{ background: "rgba(52,211,153,0.15)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: "8px", color: "#34d399", padding: "6px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 700 }}>✓ Close</button>
-              <button onClick={() => handleDeleteCase(openCase)} style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "8px", color: "#ef4444", padding: "6px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 700 }}>🗑</button>
+          {editingCase === openCase ? (
+            <div style={{ background: cb, border: `1px solid ${brd}`, borderRadius: "14px", padding: "14px", marginBottom: "14px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <input value={editCaseValues.family_name || ""} onChange={e => setEditCaseValues(v => ({ ...v, family_name: e.target.value }))} placeholder="Family name" style={{ ...is, width: "100%", fontWeight: 700 }} />
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <input value={editCaseValues.nok_name || ""} onChange={e => setEditCaseValues(v => ({ ...v, nok_name: e.target.value }))} placeholder="NOK name" style={{ ...is, flex: 1 }} />
+                  <input value={editCaseValues.nok_phone || ""} onChange={e => setEditCaseValues(v => ({ ...v, nok_phone: e.target.value }))} placeholder="NOK phone" style={{ ...is, flex: 1 }} />
+                </div>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <div style={{ flex: 1 }}><label style={{ fontSize: "10px", color: mc, display: "block", marginBottom: "3px" }}>DOB</label><input type="date" value={editCaseValues.dob || ""} onChange={e => setEditCaseValues(v => ({ ...v, dob: e.target.value }))} style={{ ...is, width: "100%" }} /></div>
+                  <div style={{ flex: 1 }}><label style={{ fontSize: "10px", color: mc, display: "block", marginBottom: "3px" }}>DOD</label><input type="date" value={editCaseValues.dod || ""} onChange={e => setEditCaseValues(v => ({ ...v, dod: e.target.value }))} style={{ ...is, width: "100%" }} /></div>
+                </div>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  {["Male","Female","Other"].map(s => <button key={s} onClick={() => setEditCaseValues(v => ({ ...v, sex: s }))} style={{ flex: 1, padding: "6px", background: editCaseValues.sex === s ? "linear-gradient(135deg,#22d3ee44,#a78bfa44)" : ibg, border: `1px solid ${editCaseValues.sex === s ? "#a78bfa" : brd}`, borderRadius: "8px", color: editCaseValues.sex === s ? "#a78bfa" : mc, cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "12px" }}>{s}</button>)}
+                </div>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button onClick={saveCaseEdit} style={{ flex: 1, background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", borderRadius: "8px", color: "#fff", padding: "8px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "12px" }}>Save</button>
+                  <button onClick={() => setEditingCase(null)} style={{ flex: 1, background: "none", border: `1px solid ${brd}`, borderRadius: "8px", color: mc, padding: "8px", cursor: "pointer", fontFamily: "inherit", fontSize: "12px" }}>Cancel</button>
+                </div>
+              </div>
             </div>
-          </div>
-          {openCaseData.nok_phone && <a href={`tel:${openCaseData.nok_phone}`} style={{ display: "flex", alignItems: "center", gap: "8px", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: "12px", padding: "10px 14px", marginBottom: "14px", textDecoration: "none" }}><span style={{ fontSize: "18px" }}>📞</span><div><div style={{ fontSize: "12px", fontWeight: 700, color: "#34d399" }}>Call NOK — {openCaseData.nok_name || "Family Contact"}</div><div style={{ fontSize: "10px", color: mc }}>{openCaseData.nok_phone}</div></div></a>}
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
+              <button onClick={() => setOpenCase(null)} style={{ background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", borderRadius: "8px", color: "#fff", padding: "7px 12px", cursor: "pointer", fontFamily: "inherit", fontSize: "12px", fontWeight: 700 }}>← Back</button>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: "16px", fontWeight: 800, color: tc }}>{openCaseData.family_name} Family</div>
+                <div style={{ fontSize: "11px", color: mc }}>{openCaseTasks.filter(t => t.status === "pending").length} pending · {openCaseTasks.filter(t => t.status === "done").length} done</div>
+              </div>
+              <div style={{ display: "flex", gap: "6px" }}>
+                <button onClick={() => { setEditingCase(openCase); setEditCaseValues({ family_name: openCaseData.family_name, nok_name: openCaseData.nok_name || "", nok_phone: openCaseData.nok_phone || "", dob: openCaseData.dob || "", dod: openCaseData.dod || "", sex: openCaseData.sex || "" }); }} style={{ background: "rgba(167,139,250,0.15)", border: "1px solid rgba(167,139,250,0.3)", borderRadius: "8px", color: "#a78bfa", padding: "7px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 700 }}>✏️</button>
+                <button onClick={() => handleCloseCase(openCase)} style={{ background: "rgba(255,255,255,0.06)", border: `1px solid ${brd}`, borderRadius: "8px", color: tc, padding: "7px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 700 }}>Close</button>
+                <button onClick={() => handleDeleteCase(openCase)} style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "8px", color: "#ef4444", padding: "7px 10px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 700 }}>🗑</button>
+              </div>
+            </div>
+          )}
+
+          {openCaseData.nok_phone && !editingCase && <a href={`tel:${openCaseData.nok_phone}`} style={{ display: "flex", alignItems: "center", gap: "8px", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: "12px", padding: "10px 14px", marginBottom: "14px", textDecoration: "none" }}><span style={{ fontSize: "20px" }}>📞</span><div><div style={{ fontSize: "12px", fontWeight: 700, color: "#34d399" }}>Call {openCaseData.nok_name || "NOK"}</div><div style={{ fontSize: "10px", color: mc }}>{openCaseData.nok_phone}</div></div></a>}
+
           {openCaseGroups.map(group => {
             const key = `${openCase}-${group.name}`;
             const expanded = expandedGroups[key] || false;
             const doneCount = group.tasks.filter(t => t.status === "done").length;
             const allDone = doneCount === group.tasks.length;
+            const drag = useLongPressDrag(group.tasks, (fi, ti) => reorderTasksInGroup(openCase, group.name, fi, ti));
             return (
               <div key={group.name} style={{ marginBottom: "10px" }}>
                 <div className="group-row" onClick={() => setExpandedGroups(prev => ({ ...prev, [key]: !expanded }))}
                   style={{ display: "flex", alignItems: "center", gap: "10px", background: cb, border: `1px solid ${brd}`, borderRadius: "12px", padding: "12px 14px" }}>
                   <div style={{ flex: 1 }}><div style={{ fontSize: "13px", fontWeight: 700, color: allDone ? mc : tc, textDecoration: allDone ? "line-through" : "none" }}>{group.name}</div><div style={{ fontSize: "10px", color: mc, marginTop: "2px" }}>{doneCount}/{group.tasks.length} complete</div></div>
                   <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-                    {allDone && <span style={{ fontSize: "12px" }}>✅</span>}
-                    <div style={{ color: mc, fontSize: "14px", transition: "transform .2s", transform: expanded ? "rotate(90deg)" : "rotate(0)" }}>›</div>
+                    {allDone && <span style={{ fontSize: "14px" }}>✅</span>}
+                    <div style={{ color: mc, fontSize: "16px", transition: "transform .2s", transform: expanded ? "rotate(90deg)" : "rotate(0)" }}>›</div>
                   </div>
                 </div>
-                {expanded && <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "6px", paddingLeft: "8px" }}>{group.tasks.map(task => <TaskCard key={task.id} task={task} />)}</div>}
+                {expanded && (
+                  <div style={{ marginTop: "6px", paddingLeft: "8px" }}
+                    onTouchMove={drag.onTouchMove} onTouchEnd={drag.onTouchEnd}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      {group.tasks.map((task, idx) => (
+                        <div key={task.id} data-drag-id={task.id} onTouchStart={e => drag.onTouchStart(e, task.id)}
+                          style={{ opacity: drag.dragId === task.id ? 0.5 : 1, transform: drag.dragId === task.id ? "scale(1.02)" : "scale(1)", transition: "all .15s" }}>
+                          <TaskCard task={task} groupName={group.name} caseId={openCase} />
+                        </div>
+                      ))}
+                    </div>
+                    {/* Add task to group */}
+                    {addingTaskToGroup === key ? (
+                      <div style={{ display: "flex", gap: "6px", marginTop: "6px" }}>
+                        <input value={newTaskTitle} onChange={e => setNewTaskTitle(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addTaskToGroup(openCase, group.name); }} placeholder="New task..." style={{ ...is, flex: 1, padding: "6px 10px", fontSize: "12px" }} autoFocus />
+                        <button onClick={() => addTaskToGroup(openCase, group.name)} style={{ background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", borderRadius: "8px", color: "#fff", padding: "6px 10px", cursor: "pointer", fontSize: "12px", fontFamily: "inherit", fontWeight: 700 }}>Add</button>
+                        <button onClick={() => { setAddingTaskToGroup(null); setNewTaskTitle(""); }} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "8px", color: mc, padding: "6px 10px", cursor: "pointer", fontSize: "12px" }}>×</button>
+                      </div>
+                    ) : (
+                      <button onClick={e => { e.stopPropagation(); setAddingTaskToGroup(key); setNewTaskTitle(""); }} style={{ marginTop: "6px", background: "none", border: `1px dashed ${brd}`, borderRadius: "8px", color: mc, padding: "5px 12px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit", width: "100%" }}>+ Add task to {group.name}</button>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
+
+          {/* Case notes */}
           <div style={{ marginTop: "16px" }}>
             <div style={{ fontSize: "10px", fontWeight: 700, color: mc, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>Case Notes</div>
             <textarea value={caseNotes[openCase] || ""} onChange={async e => { const val = e.target.value; setCaseNotes(prev => ({ ...prev, [openCase]: val })); await upsertCaseNotes(openCase, user.id, val); }} placeholder="Family preferences, sensitivities, special requests, contacts..." rows={5}
@@ -800,18 +952,18 @@ function KarenMain({ user, userProfile }) {
       {activeTab === 2 && (
         <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
           <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginBottom: "12px" }}>
-            {["all","unfiled",...familyFolders].map(f => <button key={f} className="fp" onClick={() => setHistoryFolder(f)} style={{ padding: "3px 10px", background: historyFolder === f ? "linear-gradient(135deg,#22d3ee88,#a78bfa88)" : ibg, color: historyFolder === f ? "#fff" : mc, border: `1px solid ${historyFolder === f ? "rgba(167,139,250,0.5)" : brd}`, borderRadius: "20px", fontSize: "10px", fontFamily: "inherit", fontWeight: 600, textTransform: "uppercase" }}>{f === "all" ? `All (${doneTasks.length})` : f === "unfiled" ? "Unfiled" : `👨‍👩‍👧 ${f}`}</button>)}
+            {["all","unfiled",...familyFolders].map(f => <button key={f} className="fp" onClick={() => setHistoryFolder(f)} style={{ padding: "4px 10px", background: historyFolder === f ? "linear-gradient(135deg,#22d3ee88,#a78bfa88)" : ibg, color: historyFolder === f ? "#fff" : mc, border: `1px solid ${historyFolder === f ? "rgba(167,139,250,0.5)" : brd}`, borderRadius: "20px", fontSize: "10px", fontFamily: "inherit", fontWeight: 600, textTransform: "uppercase" }}>{f === "all" ? `All (${doneTasks.length})` : f === "unfiled" ? "Unfiled" : `👨‍👩‍👧 ${f}`}</button>)}
           </div>
           {historyFiltered.length === 0 ? <div style={{ textAlign: "center", marginTop: "40px" }}><KarenMascot size={50} animated /><div style={{ color: mc, fontSize: "13px", marginTop: "12px" }}>Nothing here yet.</div></div> : (
             <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
               {historyFiltered.sort((a,b) => new Date(b.completed_at || b.created_at) - new Date(a.completed_at || a.created_at)).map(task => (
                 <div key={task.id} style={{ background: cb, border: `1px solid ${brd}`, borderLeft: "3px solid #1e293b", borderRadius: "12px", padding: "10px 12px", opacity: 0.65 }}>
                   <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                    <span>✅</span>
+                    <span style={{ fontSize: "16px" }}>✅</span>
                     <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: "12px", fontWeight: 600, textDecoration: "line-through", color: mc }}>{task.title}</div><div style={{ fontSize: "10px", color: mc, marginTop: "2px", display: "flex", gap: "8px" }}><span>{task.completed_at ? fmtDate(task.completed_at) : "Completed"}</span>{task.family_name && <span>👨‍👩‍👧 {task.family_name}</span>}</div></div>
-                    <div style={{ display: "flex", gap: "3px", flexShrink: 0 }}>
-                      <button onClick={() => toggleTask(task.id)} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: "#a78bfa", padding: "2px 6px", cursor: "pointer", fontSize: "9px", fontFamily: "inherit" }}>↩</button>
-                      <button onClick={() => { if (window.confirm("Delete from history?")) handleDeleteTask(task.id); }} style={{ background: "none", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "6px", color: "#ef4444", padding: "2px 6px", cursor: "pointer", fontSize: "9px" }}>🗑</button>
+                    <div style={{ display: "flex", gap: "5px", flexShrink: 0 }}>
+                      <button onClick={() => toggleTask(task.id)} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: "#a78bfa", padding: "4px 8px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}>↩</button>
+                      <button onClick={() => { if (window.confirm("Delete from history?")) handleDeleteTask(task.id); }} style={{ background: "none", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "6px", color: "#ef4444", padding: "4px 8px", cursor: "pointer", fontSize: "11px" }}>🗑</button>
                     </div>
                   </div>
                 </div>
@@ -824,10 +976,25 @@ function KarenMain({ user, userProfile }) {
       {/* Quick capture */}
       {activeTab !== 0 && (
         <button onClick={() => { setActiveTab(0); setTimeout(() => { inputRef.current?.focus(); if (!listening) { const r = startVoice(t => { setInput(p => p ? p + " " + t : t); setListening(false); }, () => setListening(false)); if (r) { recRef.current = r; setListening(true); } } }, 200); }}
-          style={{ position: "fixed", bottom: "20px", left: "20px", width: "52px", height: "52px", borderRadius: "50%", background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "22px", boxShadow: "0 4px 20px rgba(167,139,250,0.4)", zIndex: 50 }}>🎙</button>
+          style={{ position: "fixed", bottom: "20px", left: "20px", width: "54px", height: "54px", borderRadius: "50%", background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "24px", boxShadow: "0 4px 20px rgba(167,139,250,0.4)", zIndex: 50 }}>🎙</button>
       )}
 
-      {/* Quiet mode modal */}
+      {/* Contact prompt */}
+      {contactPrompt && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
+          <div style={{ background: darkMode ? "#1a1035" : "#fff", border: `1px solid ${brd}`, borderRadius: "20px", padding: "24px", width: "100%", maxWidth: "320px", textAlign: "center" }}>
+            <div style={{ fontSize: "24px", marginBottom: "12px" }}>📞</div>
+            <div style={{ fontSize: "15px", fontWeight: 700, color: tc, marginBottom: "8px" }}>Save {contactPrompt.name}?</div>
+            <div style={{ fontSize: "13px", color: mc, marginBottom: "20px" }}>Add {contactPrompt.name} to your contacts so Kare-N recognizes them in future conversations.</div>
+            <div style={{ display: "flex", gap: "10px" }}>
+              <button onClick={() => setContactPrompt(null)} style={{ flex: 1, background: "none", border: `1px solid ${brd}`, borderRadius: "12px", color: mc, padding: "10px", cursor: "pointer", fontFamily: "inherit", fontSize: "13px" }}>Not now</button>
+              <button onClick={saveContactFromPrompt} style={{ flex: 1, background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", borderRadius: "12px", color: "#fff", padding: "10px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "13px" }}>Save Contact</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quiet mode */}
       {showQuietMode && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
           <div style={{ background: darkMode ? "#1a1035" : "#fff", border: `1px solid ${brd}`, borderRadius: "20px", padding: "24px", width: "100%", maxWidth: "320px" }}>
@@ -859,18 +1026,17 @@ function KarenMain({ user, userProfile }) {
                     <div style={{ fontSize: "40px", fontWeight: 800, background: "linear-gradient(90deg,#22d3ee,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>{monthlyCount}</div>
                     <div style={{ fontSize: "12px", color: mc, fontWeight: 600 }}>tasks completed this month</div>
                   </div>
+                  {/* Name field */}
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: `1px solid ${brd}` }}>
                     <div><div style={{ fontSize: "13px", fontWeight: 600, color: tc }}>Your Name</div><div style={{ fontSize: "10px", color: mc }}>What Kare-N calls you</div></div>
-                    <input value={displayName} onChange={e => setDisplayName(e.target.value)} onBlur={async () => { if (displayName.trim()) { await supabase.from('users').update({ display_name: displayName.trim() }).eq('id', user.id); } }} placeholder="Enter your name" style={{ ...is, padding: "5px 10px", width: "140px", textAlign: "right" }} />
+                    <input value={displayName} onChange={e => setDisplayName(e.target.value)} onBlur={async () => { if (displayName.trim()) await supabase.from('users').update({ display_name: displayName.trim() }).eq('id', user.id); }} placeholder="Enter your name" style={{ ...is, padding: "5px 10px", width: "140px", textAlign: "right" }} />
                   </div>
                   {[
                     { label: "Appearance", sub: "Dark or light theme", control: <button onClick={() => updateSettings({ dark_mode: !settings.dark_mode })} style={{ background: settings.dark_mode ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(167,139,250,0.2)", border: "none", borderRadius: "20px", padding: "6px 14px", cursor: "pointer", color: settings.dark_mode ? "#fff" : "#a78bfa", fontFamily: "inherit", fontWeight: 700, fontSize: "12px" }}>{settings.dark_mode ? "🌙 Dark" : "☀️ Light"}</button> },
                     { label: "Default Due Time", sub: "Used when no time given", control: <input type="time" value={settings.default_due_time} onChange={e => updateSettings({ default_due_time: e.target.value })} style={{ ...is, padding: "5px 8px" }} /> },
                     { label: "Voice Responses", sub: "Kare-N reads messages aloud", control: <button onClick={() => updateSettings({ voice_enabled: !settings.voice_enabled })} style={{ background: settings.voice_enabled ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(255,255,255,0.05)", border: `1px solid ${brd}`, borderRadius: "20px", padding: "6px 14px", cursor: "pointer", color: settings.voice_enabled ? "#fff" : mc, fontFamily: "inherit", fontWeight: 700, fontSize: "12px" }}>{settings.voice_enabled ? "On" : "Off"}</button> },
                     { label: "Keep Screen Awake", sub: "Prevent timeout while app is open", control: <button onClick={() => updateSettings({ screen_wake: !settings.screen_wake })} style={{ background: settings.screen_wake ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(255,255,255,0.05)", border: `1px solid ${brd}`, borderRadius: "20px", padding: "6px 14px", cursor: "pointer", color: settings.screen_wake ? "#fff" : mc, fontFamily: "inherit", fontWeight: 700, fontSize: "12px" }}>{settings.screen_wake ? "On" : "Off"}</button> },
-                    { label: "App Lock", sub: "Optional PIN to open app", control: <button onClick={() => updateSettings({ pin_enabled: !settings.pin_enabled })} style={{ background: settings.pin_enabled ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(255,255,255,0.05)", border: `1px solid ${brd}`, borderRadius: "20px", padding: "6px 14px", cursor: "pointer", color: settings.pin_enabled ? "#fff" : mc, fontFamily: "inherit", fontWeight: 700, fontSize: "12px" }}>{settings.pin_enabled ? "On" : "Off"}</button> },
                   ].map(({ label, sub, control }) => <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: `1px solid ${brd}` }}><div><div style={{ fontSize: "13px", fontWeight: 600, color: tc }}>{label}</div><div style={{ fontSize: "10px", color: mc }}>{sub}</div></div>{control}</div>)}
-                  {settings.pin_enabled && <div style={{ padding: "12px 0", borderBottom: `1px solid ${brd}` }}><div style={{ fontSize: "13px", fontWeight: 600, color: tc, marginBottom: "8px" }}>Set PIN</div><input type="password" maxLength={6} placeholder="4-6 digit PIN" value={settings.pin || ""} onChange={e => updateSettings({ pin: e.target.value })} style={{ ...is, width: "100%" }} /></div>}
                   <div style={{ padding: "12px 0" }}>
                     <div style={{ fontSize: "13px", fontWeight: 600, color: tc, marginBottom: "10px" }}>Feedback</div>
                     {feedbackSent ? <div style={{ color: "#34d399", fontWeight: 700 }}>✓ Sent!</div> : <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}><textarea value={feedback} onChange={e => setFeedback(e.target.value)} placeholder="What's working, what's not..." rows={3} style={{ ...is, width: "100%", lineHeight: "1.5" }} /><button onClick={handleFeedback} disabled={!feedback.trim()} style={{ background: feedback.trim() ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "rgba(255,255,255,0.05)", border: "none", borderRadius: "10px", color: feedback.trim() ? "#fff" : mc, padding: "10px", cursor: feedback.trim() ? "pointer" : "not-allowed", fontFamily: "inherit", fontWeight: 700, fontSize: "13px" }}>Send Feedback</button></div>}
@@ -883,9 +1049,9 @@ function KarenMain({ user, userProfile }) {
               {settingsTab === "templates" && (
                 <div>
                   <div style={{ fontSize: "12px", color: mc, marginBottom: "14px", lineHeight: 1.5 }}>Tell Kare-N to update your templates in chat — changes save automatically.</div>
-                  {templates.map((template, ti) => (
+                  {templates.map(template => (
                     <div key={template.id} style={{ background: cb, border: `1px solid ${brd}`, borderLeft: `4px solid ${template.color}`, borderRadius: "14px", padding: "14px", marginBottom: "10px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px" }}><div><div style={{ fontSize: "14px", fontWeight: 700, color: tc }}>{template.name}</div><div style={{ fontSize: "11px", color: mc }}>{template.description}</div></div></div>
+                      <div style={{ fontSize: "14px", fontWeight: 700, color: tc, marginBottom: "8px" }}>{template.name}</div>
                       {template.groups.map((group, gi) => (
                         <div key={gi} style={{ marginBottom: "8px" }}>
                           <div style={{ fontSize: "10px", fontWeight: 700, color: template.color, textTransform: "uppercase", marginBottom: "4px" }}>{group.name}</div>
@@ -904,21 +1070,21 @@ function KarenMain({ user, userProfile }) {
                     <input value={newVendorPhone} onChange={e => setNewVendorPhone(e.target.value)} placeholder="Phone number" style={{ ...is, width: "100%" }} />
                     <button onClick={async () => { if (!newVendorName.trim() || !newVendorPhone.trim()) return; await upsertContact(user.id, { name: newVendorName.trim(), phone: newVendorPhone.trim(), type: "vendor" }); const { data } = await getContacts(user.id); if (data) setContacts(data); setNewVendorName(""); setNewVendorPhone(""); }} style={{ background: "linear-gradient(135deg,#22d3ee,#a78bfa)", border: "none", borderRadius: "10px", color: "#fff", padding: "10px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "13px" }}>Save Contact</button>
                   </div>
-                  {contacts.length === 0 ? <div style={{ textAlign: "center", color: mc, fontSize: "13px" }}>No contacts saved yet.</div> : <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>{contacts.map(v => <div key={v.id} style={{ background: cb, border: `1px solid ${brd}`, borderRadius: "12px", padding: "12px 14px", display: "flex", alignItems: "center", gap: "10px" }}><div style={{ flex: 1 }}><div style={{ fontSize: "13px", fontWeight: 600, color: tc }}>{v.name}</div><div style={{ fontSize: "11px", color: mc }}>{v.phone}</div></div><a href={`tel:${v.phone}`} style={{ background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: "6px", color: "#34d399", padding: "4px 8px", fontSize: "11px", fontWeight: 700, textDecoration: "none" }}>📞</a><button onClick={async () => { await dbDeleteContact(v.id); setContacts(prev => prev.filter(c => c.id !== v.id)); }} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: mc, padding: "4px 8px", cursor: "pointer", fontSize: "12px" }}>×</button></div>)}</div>}
+                  {contacts.length === 0 ? <div style={{ textAlign: "center", color: mc, fontSize: "13px" }}>No contacts saved yet.</div> : <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>{contacts.map(v => <div key={v.id} style={{ background: cb, border: `1px solid ${brd}`, borderRadius: "12px", padding: "12px 14px", display: "flex", alignItems: "center", gap: "10px" }}><div style={{ flex: 1 }}><div style={{ fontSize: "13px", fontWeight: 600, color: tc }}>{v.name}</div><div style={{ fontSize: "11px", color: mc }}>{v.phone}</div></div><a href={`tel:${v.phone}`} style={{ background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: "6px", color: "#34d399", padding: "5px 10px", fontSize: "12px", fontWeight: 700, textDecoration: "none" }}>📞</a><button onClick={async () => { await dbDeleteContact(v.id); setContacts(prev => prev.filter(c => c.id !== v.id)); }} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: mc, padding: "5px 10px", cursor: "pointer", fontSize: "13px" }}>×</button></div>)}</div>}
                 </div>
               )}
               {settingsTab === "documents" && (
                 <div>
                   <div style={{ fontSize: "12px", color: mc, marginBottom: "14px" }}>Upload forms and documents — synced across all your devices.</div>
                   <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg" onChange={handleDocUpload} style={{ display: "none" }} />
-                  <button onClick={() => fileInputRef.current?.click()} style={{ width: "100%", background: "rgba(34,211,238,0.1)", border: "1px dashed rgba(34,211,238,0.4)", borderRadius: "12px", color: "#22d3ee", padding: "12px", cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "13px", marginBottom: "14px" }}>📎 Upload Document</button>
-                  {documents.length === 0 ? <div style={{ textAlign: "center", color: mc, fontSize: "13px" }}>No documents yet.</div> : <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>{documents.map(doc => <div key={doc.id} style={{ background: cb, border: `1px solid ${brd}`, borderRadius: "12px", padding: "12px 14px", display: "flex", alignItems: "center", gap: "10px" }}><div style={{ fontSize: "22px" }}>{doc.file_type?.includes("pdf") ? "📄" : doc.file_type?.includes("image") ? "🖼" : "📝"}</div><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: "13px", fontWeight: 600, color: tc, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.name}</div><div style={{ fontSize: "10px", color: mc }}>{new Date(doc.uploaded_at).toLocaleDateString()}</div></div><button onClick={async () => { const url = await getDocumentUrl(doc.storage_path); window.open(url, "_blank"); }} style={{ background: "rgba(34,211,238,0.1)", border: "1px solid rgba(34,211,238,0.3)", borderRadius: "6px", color: "#22d3ee", padding: "4px 8px", fontSize: "10px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↓</button><button onClick={() => handleDeleteDoc(doc)} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: mc, padding: "4px 8px", cursor: "pointer", fontSize: "12px" }}>×</button></div>)}</div>}
+                  <button onClick={() => fileInputRef.current?.click()} disabled={uploadingDoc} style={{ width: "100%", background: uploadingDoc ? "rgba(167,139,250,0.1)" : "rgba(34,211,238,0.1)", border: "1px dashed rgba(34,211,238,0.4)", borderRadius: "12px", color: uploadingDoc ? "#a78bfa" : "#22d3ee", padding: "12px", cursor: uploadingDoc ? "not-allowed" : "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "13px", marginBottom: "14px" }}>{uploadingDoc ? "⏳ Uploading..." : "📎 Upload Document"}</button>
+                  {documents.length === 0 ? <div style={{ textAlign: "center", color: mc, fontSize: "13px" }}>No documents yet.</div> : <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>{documents.map(doc => <div key={doc.id} style={{ background: cb, border: `1px solid ${brd}`, borderRadius: "12px", padding: "12px 14px", display: "flex", alignItems: "center", gap: "10px" }}><div style={{ fontSize: "22px" }}>{doc.file_type?.includes("pdf") ? "📄" : doc.file_type?.includes("image") ? "🖼" : "📝"}</div><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: "13px", fontWeight: 600, color: tc, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.name}</div><div style={{ fontSize: "10px", color: mc }}>{new Date(doc.uploaded_at).toLocaleDateString()}</div></div><button onClick={async () => { const url = await getDocumentUrl(doc.storage_path); window.open(url, "_blank"); }} style={{ background: "rgba(34,211,238,0.1)", border: "1px solid rgba(34,211,238,0.3)", borderRadius: "6px", color: "#22d3ee", padding: "5px 10px", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>↓</button><button onClick={async () => { await dbDeleteDocument(doc.id, doc.storage_path); setDocuments(prev => prev.filter(d => d.id !== doc.id)); }} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: mc, padding: "5px 10px", cursor: "pointer", fontSize: "13px" }}>×</button></div>)}</div>}
                 </div>
               )}
               {settingsTab === "help" && (
                 <div>
                   <div style={{ fontSize: "14px", fontWeight: 700, color: tc, marginBottom: "14px" }}>Quick Tips</div>
-                  {[["👨‍👩‍👧","New family case","Tap 'New Family Case' or say 'new family' in chat"],["🎙","Voice input","Tap the mic to speak — works in chat and onboarding"],["⚡","Quick capture","Tap the mic button (bottom left) from any tab — opens chat and starts listening"],["🔕","Quiet mode","Tap the bell before a service — silences everything"],["📋","Arrangement debrief","Check off the arrangement task and Kare-N asks for a debrief automatically"],["🔊","Voice responses","Tap the speaker on any message to hear it read aloud"],["📅","Google Calendar","Tap the Cal button on any task with a due date to open Google Calendar pre-filled"],["🌐","Access anywhere","Sign in from any browser — your data follows you everywhere"],["🔒","App lock","Enable PIN in General settings"]].map(([icon,title,desc]) => (
+                  {[["👨‍👩‍👧","New family case","Tap 'New Family Case' or say 'new family' in chat"],["🎙","Voice input","Tap the mic to speak — works in chat and onboarding"],["⚡","Quick capture","Tap the mic button (bottom left) from any tab"],["🔕","Quiet mode","Tap the bell before a service — silences everything"],["📋","Arrangement debrief","Check off the arrangement task and Kare-N asks automatically"],["🔊","Voice responses","Tap the speaker on any message to hear it read aloud"],["📅","Google Calendar","Tap Cal on any task with a due date to open pre-filled event"],["🌐","Access anywhere","Sign in from any browser — your data follows you"],["🔉","Mobile voices","If only male voices show, go to your phone Settings → General Management → Language → Text-to-speech and install additional English voices"]].map(([icon,title,desc]) => (
                     <div key={title} style={{ display: "flex", gap: "12px", padding: "12px 0", borderBottom: `1px solid ${brd}` }}>
                       <div style={{ fontSize: "20px", flexShrink: 0 }}>{icon}</div>
                       <div><div style={{ fontSize: "13px", fontWeight: 600, color: tc, marginBottom: "3px" }}>{title}</div><div style={{ fontSize: "11px", color: mc, lineHeight: 1.5 }}>{desc}</div></div>
@@ -952,7 +1118,7 @@ function KarenMain({ user, userProfile }) {
                 <div style={{ flex: 1 }}><label style={{ fontSize: "10px", color: mc, fontWeight: 700, textTransform: "uppercase", display: "block", marginBottom: "4px" }}>DOD</label><input type="date" value={familyIntake.dod} onChange={e => setFamilyIntake(f => ({ ...f, dod: e.target.value }))} style={{ ...is, width: "100%" }} /></div>
               </div>
               <div><label style={{ fontSize: "10px", color: mc, fontWeight: 700, textTransform: "uppercase", display: "block", marginBottom: "4px" }}>Sex</label><div style={{ display: "flex", gap: "8px" }}>{["Male","Female","Other"].map(s => <button key={s} onClick={() => setFamilyIntake(f => ({ ...f, sex: s }))} style={{ flex: 1, padding: "7px", background: familyIntake.sex === s ? "linear-gradient(135deg,#22d3ee44,#a78bfa44)" : ibg, border: `1px solid ${familyIntake.sex === s ? "#a78bfa" : brd}`, borderRadius: "8px", color: familyIntake.sex === s ? "#a78bfa" : mc, cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "12px" }}>{s}</button>)}</div></div>
-              <div><label style={{ fontSize: "10px", color: mc, fontWeight: 700, textTransform: "uppercase", display: "block", marginBottom: "4px" }}>Workflow</label><div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>{templates.map(t => <button key={t.id} onClick={() => setFamilyIntake(f => ({ ...f, template: t.id }))} style={{ flex: 1, padding: "7px", background: familyIntake.template === t.id ? `${t.color}33` : ibg, border: `1px solid ${familyIntake.template === t.id ? t.color : brd}`, borderRadius: "8px", color: familyIntake.template === t.id ? t.color : mc, cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "12px" }}>{t.name}</button>)}</div></div>
+              <div><label style={{ fontSize: "10px", color: mc, fontWeight: 700, textTransform: "uppercase", display: "block", marginBottom: "4px" }}>Workflow</label><div style={{ display: "flex", gap: "8px" }}>{templates.map(t => <button key={t.id} onClick={() => setFamilyIntake(f => ({ ...f, template: t.id }))} style={{ flex: 1, padding: "7px", background: familyIntake.template === t.id ? `${t.color}33` : ibg, border: `1px solid ${familyIntake.template === t.id ? t.color : brd}`, borderRadius: "8px", color: familyIntake.template === t.id ? t.color : mc, cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: "12px" }}>{t.name}</button>)}</div></div>
             </div>
             <div style={{ display: "flex", gap: "10px", marginTop: "20px" }}>
               <button onClick={() => setShowFamilyIntake(false)} style={{ flex: 1, background: "none", border: `1px solid ${brd}`, borderRadius: "12px", color: mc, padding: "11px", cursor: "pointer", fontFamily: "inherit", fontWeight: 600, fontSize: "13px" }}>Cancel</button>
@@ -965,55 +1131,28 @@ function KarenMain({ user, userProfile }) {
   );
 }
 
-// ── Auth callback handler ─────────────────────────────────────────────────────
-function AuthCallback() {
-  useEffect(() => {
-    supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' && session) {
-        window.location.href = '/';
-      }
-    });
-  }, []);
-  return (
-    <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0f172a", fontFamily: "'Nunito',sans-serif" }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap');@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}`}</style>
-      <div style={{ textAlign: "center" }}><KarenMascot size={60} animated /><div style={{ color: "#64748b", marginTop: "16px", fontSize: "14px" }}>Signing you in...</div></div>
-    </div>
-  );
-}
-
 // ── Router ────────────────────────────────────────────────────────────────────
 export default function App() {
   const [session, setSession] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
   const [view, setView] = useState("loading");
-  const [unlocked, setUnlocked] = useState(false);
 
   useEffect(() => {
-    // Handle auth callback
     if (window.location.pathname === '/auth/callback') { setView("callback"); return; }
-
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (session) { handleSignedIn(session); }
-      else { setView("login"); }
+      if (session) handleSignedIn(session); else setView("login");
     });
-
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      setSession(session);
-      if (session) { handleSignedIn(session); }
-      else { setView("login"); }
+      if (session) handleSignedIn(session); else setView("login");
     });
-
     return () => subscription.unsubscribe();
   }, []);
 
   async function handleSignedIn(session) {
-    // Upsert user record
     const { data: profile } = await upsertUser(session.user.id, session.user.email, { name: session.user.user_metadata?.name || session.user.email.split("@")[0] });
     setUserProfile(profile);
-    if (profile?.onboarded) { setView("app"); }
-    else { setView("onboarding"); }
+    setSession(session);
+    if (profile?.onboarded) setView("app"); else setView("onboarding");
   }
 
   function handleOnboardingComplete(profileData) {
@@ -1021,18 +1160,10 @@ export default function App() {
     setView("app");
   }
 
-  if (view === "loading") return (
-    <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0f172a" }}>
-      <style>{`@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}`}</style>
-      <KarenMascot size={60} animated />
-    </div>
-  );
+  if (view === "loading") return <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0f172a" }}><style>{`@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}`}</style><KarenMascot size={60} animated /></div>;
   if (view === "callback") return <AuthCallback />;
   if (view === "login") return <LoginScreen />;
   if (view === "onboarding") return <Onboarding userId={session?.user?.id} onComplete={handleOnboardingComplete} />;
-
-  const settings = userProfile ? { pin_enabled: false, pin: null } : { pin_enabled: false };
-  if (view === "app" && settings.pin_enabled && settings.pin && !unlocked) return <PinLock settings={settings} onUnlock={() => setUnlocked(true)} />;
   if (view === "app") return <KarenMain user={session.user} userProfile={userProfile} />;
   return null;
 }
