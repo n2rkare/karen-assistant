@@ -355,6 +355,12 @@ function KarenMain({ user, userProfile }) {
       setLoading(false);
 
       // Call 2 — task extraction (background, non-blocking)
+      // Only run if message likely contains an action item
+      const actionWords = ['remind', 'call', 'need to', "don't forget", 'follow up', 'pick up', 'order', 'file', 'send', 'schedule', 'check', 'confirm', 'update', 'contact', 'tomorrow', 'today', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', ' am', ' pm', 'morning', 'afternoon', 'evening', 'done', 'complete', 'finished', 'prep done', 'dc filed', 'bpt', 'ink done', 'arrangement', 'first call', 'transfer', 'pickup', 'pick up', 'crematory', 'cemetery', 'family', 'service', 'arrangement'];
+      const combinedText = (text + ' ' + responseText).toLowerCase();
+      const shouldExtract = actionWords.some(w => combinedText.includes(w));
+      if (!shouldExtract) { setExtracting(false); inputRef.current?.focus(); return; }
+
       setExtracting(true);
       const extractRes = await fetch("/api/chat", {
         method: "POST",
