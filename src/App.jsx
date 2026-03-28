@@ -966,7 +966,6 @@ function KarenMain({ user, userProfile }) {
             const expanded = expandedGroups[key] || false;
             const doneCount = group.tasks.filter(t => t.status === "done").length;
             const allDone = doneCount === group.tasks.length;
-            const drag = useLongPressDrag(group.tasks, (fi, ti) => reorderTasksInGroup(openCase, group.name, fi, ti));
             return (
               <div key={group.name} style={{ marginBottom: "10px" }}>
                 <div className="group-row" onClick={() => setExpandedGroups(prev => ({ ...prev, [key]: !expanded }))}
@@ -978,17 +977,27 @@ function KarenMain({ user, userProfile }) {
                   </div>
                 </div>
                 {expanded && (
-                  <div style={{ marginTop: "6px", paddingLeft: "8px" }}
-                    onTouchMove={drag.onTouchMove} onTouchEnd={drag.onTouchEnd}>
+                  <div style={{ marginTop: "6px", paddingLeft: "8px" }}>
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                      {group.tasks.map((task, idx) => (
-                        <div key={task.id} data-drag-id={task.id} onTouchStart={e => drag.onTouchStart(e, task.id)}
-                          style={{ opacity: drag.dragId === task.id ? 0.5 : 1, transform: drag.dragId === task.id ? "scale(1.02)" : "scale(1)", transition: "all .15s" }}>
+                      {group.tasks.map((task, fromIdx) => (
+                        <div key={task.id}
+                          draggable
+                          onDragStart={e => e.dataTransfer.setData("groupTaskId", JSON.stringify({ id: task.id, groupName: group.name, fromIdx }))}
+                          onDragOver={e => e.preventDefault()}
+                          onDrop={e => {
+                            e.preventDefault();
+                            const data = e.dataTransfer.getData("groupTaskId");
+                            if (!data) return;
+                            const { id: fromId, groupName: fromGroup, fromIdx: fi } = JSON.parse(data);
+                            if (fromGroup === group.name && fromId !== task.id) {
+                              reorderTasksInGroup(openCase, group.name, fi, fromIdx);
+                            }
+                          }}
+                          style={{ cursor: "grab" }}>
                           <TaskCard task={task} groupName={group.name} caseId={openCase} />
                         </div>
                       ))}
                     </div>
-                    {/* Add task to group */}
                     {addingTaskToGroup === key ? (
                       <div style={{ display: "flex", gap: "6px", marginTop: "6px" }}>
                         <input value={newTaskTitle} onChange={e => setNewTaskTitle(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addTaskToGroup(openCase, group.name); }} placeholder="New task..." style={{ ...is, flex: 1, padding: "6px 10px", fontSize: "12px" }} autoFocus />
