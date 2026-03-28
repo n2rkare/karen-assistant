@@ -36,6 +36,16 @@ function gcalLink(title, dueDate) {
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${fmt(d)}/${fmt(end)}`;
 }
 
+function getCaseDot(caseTasks) {
+  const pending = caseTasks.filter(t => t.status === "pending");
+  if (pending.length === 0) return null;
+  const hasUrgent = pending.some(t => isUrgent(t) || isOverdue(t));
+  if (hasUrgent) return "#ff006e";
+  const hasYellow = pending.some(t => t.due_date && (new Date(t.due_date) - new Date()) < 48 * 3600000);
+  if (hasYellow) return "#ffbe0b";
+  return "#00b4d8";
+}
+
 function speak(text, voiceName, quietMode) {
   if (quietMode || !window.speechSynthesis) return;
   window.speechSynthesis.cancel();
@@ -311,6 +321,11 @@ function KarenMain({ user, userProfile }) {
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [uploadingDoc, setUploadingDoc] = useState(false);
   const [dragOverCase, setDragOverCase] = useState(null);
+  const [selectedHistory, setSelectedHistory] = useState([]);
+  const [historyBulkMode, setHistoryBulkMode] = useState(false);
+  const [movingHistoryTask, setMovingHistoryTask] = useState(null);
+  const [caseOrder, setCaseOrder] = useState([]);
+  const [generalTaskOrder, setGeneralTaskOrder] = useState([]);
   const [contactPrompt, setContactPrompt] = useState(null); // { taskId, name, phone }
   const chatEndRef = useRef(null); const inputRef = useRef(null); const recRef = useRef(null);
   const startXRef = useRef(null); const fileInputRef = useRef(null);
@@ -601,14 +616,21 @@ function KarenMain({ user, userProfile }) {
   // Computed
   const pending = tasks.filter(t => t.status === "pending");
   const overdue = pending.filter(isOverdue);
-  const urgentAll = pending.filter(isUrgent);
-  const urgentGeneral = urgentAll.filter(t => !t.case_id);
-  const urgentCase = urgentAll.filter(t => t.case_id);
-  const activeCases = cases.filter(c => !c.closed_at).sort((a,b) => new Date(b.last_activity) - new Date(a.last_activity));
-  const generalTasks = tasks.filter(t => !t.case_id && t.status === "pending" && !isUrgent(t));
+  const urgentGeneral = pending.filter(t => !t.case_id && isUrgent(t));
+  const activeCasesBase = cases.filter(c => !c.closed_at);
+  const activeCases = caseOrder.length > 0
+    ? [...activeCasesBase].sort((a,b) => caseOrder.indexOf(a.id) - caseOrder.indexOf(b.id))
+    : activeCasesBase.sort((a,b) => new Date(b.last_activity) - new Date(a.last_activity));
+  const generalTasksBase = tasks.filter(t => !t.case_id && t.status === "pending" && !isUrgent(t));
+  const generalTasks = generalTaskOrder.length > 0
+    ? [...generalTasksBase].sort((a,b) => generalTaskOrder.indexOf(a.id) - generalTaskOrder.indexOf(b.id))
+    : generalTasksBase;
   const doneTasks = tasks.filter(t => t.status === "done");
   const familyFolders = [...new Set(doneTasks.map(t => t.family_name).filter(Boolean))];
-  const historyFiltered = historyFolder === "all" ? doneTasks : historyFolder === "unfiled" ? doneTasks.filter(t => !t.family_name) : doneTasks.filter(t => t.family_name === historyFolder);
+  const allHistoryFolders = ["General", ...familyFolders];
+  const historyFiltered = historyFolder === "all" ? doneTasks
+    : historyFolder === "General" ? doneTasks.filter(t => !t.family_name)
+    : doneTasks.filter(t => t.family_name === historyFolder);
   const openCaseData = openCase ? cases.find(c => c.id === openCase) : null;
   const openCaseTasks = openCaseData ? tasks.filter(t => t.case_id === openCase) : [];
   const openCaseGroups = [...new Set(openCaseTasks.map(t => t.group_name || "General"))].map(g => ({ name: g, tasks: openCaseTasks.filter(t => (t.group_name || "General") === g) }));
@@ -807,42 +829,85 @@ function KarenMain({ user, userProfile }) {
       {/* TASKS main */}
       {activeTab === 1 && !openCase && (
         <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
-          {(urgentGeneral.length > 0 || urgentCase.length > 0) && (
+          {urgentGeneral.length > 0 && (
             <div style={{ marginBottom: "16px" }}>
               <div style={{ fontSize: "10px", fontWeight: 700, color: "#ff006e", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
                 <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#ff006e", animation: "pd 1.5s infinite" }} /> Due Within 16 Hours
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>{[...urgentGeneral, ...urgentCase].map(task => <TaskCard key={task.id} task={task} />)}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
+                {urgentGeneral.map((task, idx) => (
+                  <div key={task.id} draggable onDragStart={e => e.dataTransfer.setData("taskId", task.id)}>
+                    <TaskCard task={task} />
+                  </div>
+                ))}
+              </div>
             </div>
           )}
           {generalTasks.length > 0 && (
             <div style={{ marginBottom: "16px" }}>
               <div style={{ fontSize: "10px", fontWeight: 700, color: mc, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>General</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>{generalTasks.map(task => <TaskCard key={task.id} task={task} />)}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
+                {generalTasks.map((task, idx) => (
+                  <div key={task.id} draggable
+                    onDragStart={e => e.dataTransfer.setData("taskId", task.id)}
+                    onDragOver={e => e.preventDefault()}
+                    onDrop={e => {
+                      e.preventDefault();
+                      const fromId = e.dataTransfer.getData("taskId");
+                      const fromIdx = generalTasks.findIndex(t => t.id === fromId);
+                      if (fromIdx !== -1 && fromIdx !== idx) {
+                        const arr = [...generalTasks];
+                        const [m] = arr.splice(fromIdx, 1);
+                        arr.splice(idx, 0, m);
+                        setGeneralTaskOrder(arr.map(t => t.id));
+                      }
+                    }}>
+                    <TaskCard task={task} />
+                  </div>
+                ))}
+              </div>
             </div>
           )}
           {activeCases.length > 0 && (
             <div style={{ marginBottom: "16px" }}>
               <div style={{ fontSize: "10px", fontWeight: 700, color: mc, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>Family Cases</div>
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                {activeCases.map(c => {
-                  const cp = tasks.filter(t => t.case_id === c.id && t.status === "pending");
-                  const cu = cp.filter(isUrgent); const co = cp.filter(isOverdue);
+                {activeCases.map((c, idx) => {
+                  const caseTasks = tasks.filter(t => t.case_id === c.id);
+                  const cp = caseTasks.filter(t => t.status === "pending");
+                  const dot = getCaseDot(caseTasks);
                   return (
-                    <div key={c.id} className={`case-folder${dragOverCase === c.id ? " drag-over" : ""}`}
+                    <div key={c.id}
+                      className={`case-folder${dragOverCase === c.id ? " drag-over" : ""}`}
+                      draggable
                       onClick={() => setOpenCase(c.id)}
+                      onDragStart={e => e.dataTransfer.setData("caseId", c.id)}
                       onDragOver={e => { e.preventDefault(); setDragOverCase(c.id); }}
                       onDragLeave={() => setDragOverCase(null)}
-                      onDrop={e => { e.preventDefault(); const tid = e.dataTransfer.getData("taskId"); if (tid) dropTaskToCase(tid, c.id); }}
+                      onDrop={e => {
+                        e.preventDefault();
+                        setDragOverCase(null);
+                        const tid = e.dataTransfer.getData("taskId");
+                        const fromCaseId = e.dataTransfer.getData("caseId");
+                        if (tid) { dropTaskToCase(tid, c.id); return; }
+                        if (fromCaseId && fromCaseId !== c.id) {
+                          const fromIdx2 = activeCases.findIndex(cs => cs.id === fromCaseId);
+                          if (fromIdx2 !== -1) {
+                            const arr = [...activeCases];
+                            const [m] = arr.splice(fromIdx2, 1);
+                            arr.splice(idx, 0, m);
+                            setCaseOrder(arr.map(cs => cs.id));
+                          }
+                        }
+                      }}
                       style={{ background: cb, border: `1px solid ${brd}`, borderRadius: "14px", padding: "14px 16px", display: "flex", alignItems: "center", gap: "12px" }}>
-                      <div style={{ width: "40px", height: "40px", borderRadius: "12px", background: "linear-gradient(135deg,#22d3ee33,#a78bfa33)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "18px", flexShrink: 0 }}>👨‍👩‍👧</div>
+                      <div style={{ position: "relative", width: "40px", height: "40px", flexShrink: 0 }}>
+                        <div style={{ width: "40px", height: "40px", borderRadius: "12px", background: "linear-gradient(135deg,#22d3ee33,#a78bfa33)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "18px" }}>👨‍👩‍👧</div>
+                        {dot && <div style={{ position: "absolute", top: "-3px", right: "-3px", width: "12px", height: "12px", borderRadius: "50%", background: dot, border: "2px solid " + (darkMode ? "#0f172a" : "#f0f9ff"), boxShadow: `0 0 6px ${dot}` }} />}
+                      </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: "14px", fontWeight: 700, color: tc, marginBottom: "3px" }}>{c.family_name} Family</div>
-                        <div style={{ fontSize: "11px", color: mc, display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                          <span>{cp.length} pending</span>
-                          {co.length > 0 && <span style={{ color: "#ef4444", fontWeight: 700 }}>⚠ {co.length} overdue</span>}
-                          {cu.length > 0 && <span style={{ color: "#ff006e", fontWeight: 700 }}>🔴 {cu.length} urgent</span>}
-                        </div>
+                        <div style={{ fontSize: "11px", color: mc }}>{cp.length} pending</div>
                       </div>
                       <div style={{ color: mc, fontSize: "18px" }}>›</div>
                     </div>
@@ -951,21 +1016,71 @@ function KarenMain({ user, userProfile }) {
       {/* HISTORY */}
       {activeTab === 2 && (
         <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
-          <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginBottom: "12px" }}>
-            {["all","unfiled",...familyFolders].map(f => <button key={f} className="fp" onClick={() => setHistoryFolder(f)} style={{ padding: "4px 10px", background: historyFolder === f ? "linear-gradient(135deg,#22d3ee88,#a78bfa88)" : ibg, color: historyFolder === f ? "#fff" : mc, border: `1px solid ${historyFolder === f ? "rgba(167,139,250,0.5)" : brd}`, borderRadius: "20px", fontSize: "10px", fontFamily: "inherit", fontWeight: 600, textTransform: "uppercase" }}>{f === "all" ? `All (${doneTasks.length})` : f === "unfiled" ? "Unfiled" : `👨‍👩‍👧 ${f}`}</button>)}
+          {/* Folder tabs */}
+          <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginBottom: "10px" }}>
+            {["all", ...allHistoryFolders].map(f => <button key={f} className="fp" onClick={() => { setHistoryFolder(f); setSelectedHistory([]); setHistoryBulkMode(false); }} style={{ padding: "4px 10px", background: historyFolder === f ? "linear-gradient(135deg,#22d3ee88,#a78bfa88)" : ibg, color: historyFolder === f ? "#fff" : mc, border: `1px solid ${historyFolder === f ? "rgba(167,139,250,0.5)" : brd}`, borderRadius: "20px", fontSize: "10px", fontFamily: "inherit", fontWeight: 600, textTransform: "uppercase" }}>{f === "all" ? `All (${doneTasks.length})` : f === "General" ? "📁 General" : `👨‍👩‍👧 ${f}`}</button>)}
+          </div>
+          {/* Bulk controls */}
+          <div style={{ display: "flex", gap: "8px", marginBottom: "10px", alignItems: "center" }}>
+            <button onClick={() => { setHistoryBulkMode(!historyBulkMode); setSelectedHistory([]); }} style={{ background: historyBulkMode ? "rgba(167,139,250,0.2)" : ibg, border: `1px solid ${historyBulkMode ? "#a78bfa" : brd}`, borderRadius: "8px", color: historyBulkMode ? "#a78bfa" : mc, padding: "5px 12px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 700 }}>{historyBulkMode ? "✕ Cancel" : "☑ Select"}</button>
+            {historyBulkMode && selectedHistory.length > 0 && <>
+              <button onClick={async () => { if (window.confirm(`Delete ${selectedHistory.length} tasks?`)) { for (const id of selectedHistory) await dbDeleteTask(id); setTasks(prev => prev.filter(t => !selectedHistory.includes(t.id))); setSelectedHistory([]); setHistoryBulkMode(false); } }} style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "8px", color: "#ef4444", padding: "5px 12px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px", fontWeight: 700 }}>🗑 Delete ({selectedHistory.length})</button>
+              <button onClick={() => { if (selectedHistory.length === historyFiltered.length) setSelectedHistory([]); else setSelectedHistory(historyFiltered.map(t => t.id)); }} style={{ background: ibg, border: `1px solid ${brd}`, borderRadius: "8px", color: mc, padding: "5px 12px", cursor: "pointer", fontFamily: "inherit", fontSize: "11px" }}>Select All</button>
+            </>}
           </div>
           {historyFiltered.length === 0 ? <div style={{ textAlign: "center", marginTop: "40px" }}><KarenMascot size={50} animated /><div style={{ color: mc, fontSize: "13px", marginTop: "12px" }}>Nothing here yet.</div></div> : (
             <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
-              {historyFiltered.sort((a,b) => new Date(b.completed_at || b.created_at) - new Date(a.completed_at || a.created_at)).map(task => (
-                <div key={task.id} style={{ background: cb, border: `1px solid ${brd}`, borderLeft: "3px solid #1e293b", borderRadius: "12px", padding: "10px 12px", opacity: 0.65 }}>
+              {historyFiltered.sort((a,b) => new Date(b.completed_at || b.created_at) - new Date(a.completed_at || a.created_at)).map((task, idx) => (
+                <div key={task.id}
+                  draggable
+                  onDragStart={e => e.dataTransfer.setData("historyTaskId", task.id)}
+                  onDragOver={e => e.preventDefault()}
+                  onDrop={e => {
+                    e.preventDefault();
+                    const fromId = e.dataTransfer.getData("historyTaskId");
+                    if (fromId && fromId !== task.id) {
+                      // Reorder within current folder view
+                      const arr = [...historyFiltered];
+                      const fromIdx = arr.findIndex(t => t.id === fromId);
+                      const toIdx = idx;
+                      if (fromIdx !== -1) { const [m] = arr.splice(fromIdx, 1); arr.splice(toIdx, 0, m); }
+                    }
+                  }}
+                  style={{ background: cb, border: `1px solid ${selectedHistory.includes(task.id) ? "#a78bfa" : brd}`, borderLeft: "3px solid #1e293b", borderRadius: "12px", padding: "10px 12px", opacity: 0.65, cursor: "grab" }}>
                   <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                    <span style={{ fontSize: "16px" }}>✅</span>
-                    <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: "12px", fontWeight: 600, textDecoration: "line-through", color: mc }}>{task.title}</div><div style={{ fontSize: "10px", color: mc, marginTop: "2px", display: "flex", gap: "8px" }}><span>{task.completed_at ? fmtDate(task.completed_at) : "Completed"}</span>{task.family_name && <span>👨‍👩‍👧 {task.family_name}</span>}</div></div>
-                    <div style={{ display: "flex", gap: "5px", flexShrink: 0 }}>
-                      <button onClick={() => toggleTask(task.id)} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: "#a78bfa", padding: "4px 8px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}>↩</button>
-                      <button onClick={() => { if (window.confirm("Delete from history?")) handleDeleteTask(task.id); }} style={{ background: "none", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "6px", color: "#ef4444", padding: "4px 8px", cursor: "pointer", fontSize: "11px" }}>🗑</button>
+                    {historyBulkMode && (
+                      <button onClick={() => setSelectedHistory(prev => prev.includes(task.id) ? prev.filter(i => i !== task.id) : [...prev, task.id])} style={{ width: "20px", height: "20px", minWidth: "20px", borderRadius: "4px", border: `2px solid ${selectedHistory.includes(task.id) ? "#a78bfa" : "rgba(167,139,250,0.3)"}`, background: selectedHistory.includes(task.id) ? "linear-gradient(135deg,#22d3ee,#a78bfa)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        {selectedHistory.includes(task.id) && <span style={{ fontSize: "10px", color: "#fff", fontWeight: 700 }}>✓</span>}
+                      </button>
+                    )}
+                    {!historyBulkMode && <span style={{ fontSize: "16px" }}>✅</span>}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "12px", fontWeight: 600, textDecoration: "line-through", color: mc }}>{task.title}</div>
+                      <div style={{ fontSize: "10px", color: mc, marginTop: "2px", display: "flex", gap: "8px" }}>
+                        <span>{task.completed_at ? fmtDate(task.completed_at) : "Completed"}</span>
+                        {task.family_name && <span>👨‍👩‍👧 {task.family_name}</span>}
+                        {!task.family_name && <span>📁 General</span>}
+                      </div>
                     </div>
+                    {!historyBulkMode && <div style={{ display: "flex", gap: "5px", flexShrink: 0 }}>
+                      <button onClick={() => toggleTask(task.id)} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: "#a78bfa", padding: "4px 8px", cursor: "pointer", fontSize: "11px", fontFamily: "inherit" }}>↩</button>
+                      <button onClick={() => setMovingHistoryTask(movingHistoryTask === task.id ? null : task.id)} style={{ background: "none", border: `1px solid ${brd}`, borderRadius: "6px", color: mc, padding: "4px 8px", cursor: "pointer", fontSize: "11px" }}>📁</button>
+                      <button onClick={() => { if (window.confirm("Delete from history?")) handleDeleteTask(task.id); }} style={{ background: "none", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "6px", color: "#ef4444", padding: "4px 8px", cursor: "pointer", fontSize: "11px" }}>🗑</button>
+                    </div>}
                   </div>
+                  {movingHistoryTask === task.id && (
+                    <div style={{ marginTop: "8px", display: "flex", gap: "4px", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: "10px", color: mc, alignSelf: "center" }}>Move to:</span>
+                      {allHistoryFolders.map(folder => (
+                        <button key={folder} onClick={async () => {
+                          const fn = folder === "General" ? null : folder;
+                          await supabase.from('tasks').update({ family_name: fn }).eq('id', task.id);
+                          setTasks(prev => prev.map(t => t.id === task.id ? { ...t, family_name: fn } : t));
+                          setMovingHistoryTask(null);
+                        }} style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", borderRadius: "6px", color: "#a78bfa", padding: "3px 8px", cursor: "pointer", fontSize: "10px", fontFamily: "inherit", fontWeight: 600 }}>{folder}</button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
