@@ -284,8 +284,11 @@ export async function uploadDocument(userId, file) {
 }
 
 export async function getDocumentUrl(storagePath) {
-  const { data } = supabase.storage.from('documents').getPublicUrl(storagePath);
-  return data.publicUrl;
+  const { data, error } = await supabase.storage
+    .from('documents')
+    .createSignedUrl(storagePath, 3600);
+  if (error) return null;
+  return data.signedUrl;
 }
 
 export async function deleteDocument(docId, storagePath) {
